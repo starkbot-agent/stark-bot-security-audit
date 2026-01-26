@@ -12,28 +12,10 @@ A cloud-deployable agentic assistant built with Rust and Actix. StarkBot acts as
 
 
 
-## Starkbot is NOT production-ready 
-```
-  STARKBOT IS CURRENTLY IN EARLY ALPHA AND IS MISSING FEATURES 
+## Starkbot is in early BETA 
 
-  WHEN FULL RELEASE IS READY, IT WILL BE ANNOUNCED HERE.  FEEL FREE TO HELP BUILD STARK BOT.
+ <img width="1453" height="1018" alt="image" src="https://github.com/user-attachments/assets/2e51cf69-9c77-4610-a392-41ebd21993a5" />
 
-
-
-  FEATURES THAT ARE COMPLETE
- - one-click deploy to App Platform
- - SECRET_KEY exchanged for auth_token
- - Configure custom agent model for chat
- - Gateway + channels to poll for bot inputs (telegram bot chat)
-
-  FEATURES THAT ARE INCOMPLETE
- - hooks
- - cron
- - tools and skills
- - multi-agent
- - debug logs interface 
-  
-```
 
 
 ## Local Development

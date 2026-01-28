@@ -2,7 +2,7 @@ use std::env;
 
 #[derive(Clone)]
 pub struct Config {
-    pub secret_key: String,
+    pub login_admin_public_address: String,
     pub port: u16,
     pub gateway_port: u16,
     pub database_url: String,
@@ -11,7 +11,8 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Self {
         Self {
-            secret_key: env::var("SECRET_KEY").expect("SECRET_KEY must be set"),
+            login_admin_public_address: env::var("LOGIN_ADMIN_PUBLIC_ADDRESS")
+                .expect("LOGIN_ADMIN_PUBLIC_ADDRESS must be set"),
             port: env::var("PORT")
                 .unwrap_or_else(|_| "8080".to_string())
                 .parse()

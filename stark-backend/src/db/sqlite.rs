@@ -52,8 +52,20 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS auth_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 token TEXT UNIQUE NOT NULL,
+                public_address TEXT,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Auth challenges table for SIWE
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS auth_challenges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                public_address TEXT UNIQUE NOT NULL,
+                challenge TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )",
             [],
         )?;
@@ -318,15 +330,20 @@ impl Database {
 
     // Auth Session methods (for web login sessions)
     pub fn create_session(&self) -> SqliteResult<Session> {
+        self.create_session_for_address(None)
+    }
+
+    pub fn create_session_for_address(&self, public_address: Option<&str>) -> SqliteResult<Session> {
         let conn = self.conn.lock().unwrap();
-        let token = Uuid::new_v4().to_string();
+        let token = Self::generate_session_token();
         let created_at = Utc::now();
         let expires_at = created_at + Duration::hours(24);
 
         conn.execute(
-            "INSERT INTO auth_sessions (token, created_at, expires_at) VALUES (?1, ?2, ?3)",
-            [
+            "INSERT INTO auth_sessions (token, public_address, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
                 &token,
+                public_address,
                 &created_at.to_rfc3339(),
                 &expires_at.to_rfc3339(),
             ],
@@ -340,6 +357,65 @@ impl Database {
             created_at,
             expires_at,
         })
+    }
+
+    fn generate_session_token() -> String {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        (0..32)
+            .map(|_| format!("{:x}", rng.r#gen::<u8>() % 16))
+            .collect()
+    }
+
+    // Auth Challenge methods (for SIWE)
+    pub fn create_or_update_challenge(&self, public_address: &str, challenge: &str) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        // Upsert: insert or replace existing challenge for this address
+        conn.execute(
+            "INSERT INTO auth_challenges (public_address, challenge, created_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(public_address) DO UPDATE SET challenge = ?2, created_at = ?3",
+            [public_address, challenge, &now],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_challenge(&self, public_address: &str) -> SqliteResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT challenge FROM auth_challenges WHERE public_address = ?1",
+        )?;
+
+        let challenge = stmt
+            .query_row([public_address], |row| row.get(0))
+            .ok();
+
+        Ok(challenge)
+    }
+
+    pub fn validate_challenge(&self, public_address: &str, challenge: &str) -> SqliteResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM auth_challenges WHERE public_address = ?1 AND challenge = ?2",
+            [public_address, challenge],
+            |row| row.get(0),
+        )?;
+
+        Ok(count > 0)
+    }
+
+    pub fn delete_challenge(&self, public_address: &str) -> SqliteResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows_affected = conn.execute(
+            "DELETE FROM auth_challenges WHERE public_address = ?1",
+            [public_address],
+        )?;
+        Ok(rows_affected > 0)
     }
 
     pub fn validate_session(&self, token: &str) -> SqliteResult<Option<Session>> {

@@ -1,31 +1,90 @@
-import { useState, FormEvent } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { login } from '@/lib/api';
+import { BrowserProvider } from 'ethers';
+import { generateChallenge, validateAuth } from '@/lib/api';
 import Button from '@/components/ui/Button';
-import Input from '@/components/ui/Input';
 import Card, { CardContent } from '@/components/ui/Card';
 
+type LoginState = 'idle' | 'connecting' | 'signing' | 'verifying';
+
 export default function Login() {
-  const [secretKey, setSecretKey] = useState('');
   const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [state, setState] = useState<LoginState>('idle');
+  const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const getStateMessage = () => {
+    switch (state) {
+      case 'connecting':
+        return 'Connecting to wallet...';
+      case 'signing':
+        return 'Please sign the message in your wallet...';
+      case 'verifying':
+        return 'Verifying signature...';
+      default:
+        return '';
+    }
+  };
+
+  const handleConnect = async () => {
     setError('');
-    setIsLoading(true);
+    setState('connecting');
 
     try {
-      const result = await login(secretKey);
+      // Check if MetaMask or compatible wallet is available
+      if (typeof window.ethereum === 'undefined') {
+        throw new Error('Please install MetaMask or a compatible Ethereum wallet');
+      }
+
+      // Request account access
+      const provider = new BrowserProvider(window.ethereum);
+      const accounts = await provider.send('eth_requestAccounts', []);
+
+      if (!accounts || accounts.length === 0) {
+        throw new Error('No accounts found. Please connect your wallet.');
+      }
+
+      const address = accounts[0].toLowerCase();
+      setConnectedAddress(address);
+
+      // Generate challenge from server
+      const { challenge } = await generateChallenge(address);
+
+      // Request signature
+      setState('signing');
+      const signer = await provider.getSigner();
+      const signature = await signer.signMessage(challenge);
+
+      // Verify with server
+      setState('verifying');
+      const result = await validateAuth(address, challenge, signature);
+
+      // Store token and navigate
       localStorage.setItem('stark_token', result.token);
       navigate('/dashboard');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
-    } finally {
-      setIsLoading(false);
+      console.error('Login error:', err);
+      if (err instanceof Error) {
+        // Handle user rejection
+        if (err.message.includes('user rejected') || err.message.includes('User denied')) {
+          setError('Signature request was rejected');
+        } else {
+          setError(err.message);
+        }
+      } else {
+        setError('Login failed');
+      }
+      setState('idle');
     }
   };
+
+  const handleDisconnect = () => {
+    setConnectedAddress(null);
+    setError('');
+    setState('idle');
+  };
+
+  const isLoading = state !== 'idle';
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
@@ -34,19 +93,52 @@ export default function Login() {
           <CardContent className="p-8">
             <div className="text-center mb-8">
               <h1 className="text-3xl font-bold text-stark-400 mb-2">StarkBot</h1>
-              <p className="text-slate-400">Enter your secret key to continue</p>
+              <p className="text-slate-400">Connect your wallet to continue</p>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <Input
-                type="password"
-                label="Secret Key"
-                placeholder="Enter your secret key"
-                value={secretKey}
-                onChange={(e) => setSecretKey(e.target.value)}
-                required
-                autoComplete="current-password"
-              />
+            <div className="space-y-6">
+              {connectedAddress && !isLoading && (
+                <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-4">
+                  <div className="text-sm text-slate-400 mb-1">Connected wallet</div>
+                  <div className="font-mono text-sm text-slate-200 truncate">
+                    {connectedAddress}
+                  </div>
+                  <button
+                    onClick={handleDisconnect}
+                    className="text-xs text-slate-500 hover:text-slate-300 mt-2"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              )}
+
+              {isLoading && (
+                <div className="bg-stark-500/10 border border-stark-500/30 rounded-lg p-4 text-center">
+                  <div className="flex items-center justify-center gap-2 text-stark-400">
+                    <svg
+                      className="animate-spin h-5 w-5"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      />
+                    </svg>
+                    <span>{getStateMessage()}</span>
+                  </div>
+                </div>
+              )}
 
               {error && (
                 <div className="bg-red-500/20 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg text-sm">
@@ -55,17 +147,31 @@ export default function Login() {
               )}
 
               <Button
-                type="submit"
+                onClick={handleConnect}
                 className="w-full"
                 size="lg"
-                isLoading={isLoading}
+                disabled={isLoading}
               >
-                Login
+                {isLoading ? 'Connecting...' : 'Connect Wallet'}
               </Button>
-            </form>
+
+              <p className="text-xs text-slate-500 text-center">
+                Sign in with your Ethereum wallet using SIWE (Sign In With Ethereum)
+              </p>
+            </div>
           </CardContent>
         </Card>
       </div>
     </div>
   );
+}
+
+// Extend Window interface for ethereum provider
+declare global {
+  interface Window {
+    ethereum?: {
+      request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+      isMetaMask?: boolean;
+    };
+  }
 }

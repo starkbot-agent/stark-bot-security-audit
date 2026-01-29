@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react';
-import { Send, RotateCcw } from 'lucide-react';
+import { Send, RotateCcw, Copy, Check, Wallet } from 'lucide-react';
 import Button from '@/components/ui/Button';
 import ChatMessage from '@/components/chat/ChatMessage';
 import TypingIndicator from '@/components/chat/TypingIndicator';
 import ExecutionProgress from '@/components/chat/ExecutionProgress';
 import CommandAutocomplete from '@/components/chat/CommandAutocomplete';
 import { useGateway } from '@/hooks/useGateway';
+import { useWallet } from '@/hooks/useWallet';
 import { sendChatMessage, getAgentSettings, getSkills, getTools } from '@/lib/api';
 import type { ChatMessage as ChatMessageType, MessageRole, SlashCommand } from '@/types';
 
@@ -22,10 +23,33 @@ export default function AgentChat() {
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [debugMode, setDebugMode] = useState(false);
   const [sessionStartTime] = useState(new Date());
+  const [copied, setCopied] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { connected } = useGateway();
+  const { address, usdcBalance, isConnected: walletConnected, connect: connectWallet, isCorrectNetwork } = useWallet();
+
+  // Helper to truncate address
+  const truncateAddress = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+
+  // Copy address to clipboard
+  const copyAddress = useCallback(() => {
+    if (address) {
+      navigator.clipboard.writeText(address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  }, [address]);
+
+  // Format USDC balance
+  const formatBalance = (balance: string | null) => {
+    if (!balance) return '0.00';
+    const num = parseFloat(balance);
+    if (num >= 1000000) return `${(num / 1000000).toFixed(2)}M`;
+    if (num >= 1000) return `${(num / 1000).toFixed(2)}K`;
+    return num.toFixed(2);
+  };
 
   // Conversation history for API
   const conversationHistory = useRef<ConversationMessage[]>([]);
@@ -306,7 +330,49 @@ export default function AgentChat() {
             </span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+
+        {/* Wallet Info */}
+        <div className="flex items-center gap-4">
+          {walletConnected && address ? (
+            <div className="flex items-center gap-3">
+              {/* Wallet Address */}
+              <div className="flex items-center gap-2 bg-slate-700/50 px-3 py-1.5 rounded-lg">
+                <span className="text-sm font-mono text-slate-300">
+                  {truncateAddress(address)}
+                </span>
+                <button
+                  onClick={copyAddress}
+                  className="text-slate-400 hover:text-slate-200 transition-colors"
+                  title="Copy address"
+                >
+                  {copied ? (
+                    <Check className="w-4 h-4 text-green-400" />
+                  ) : (
+                    <Copy className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+
+              {/* USDC Balance */}
+              <div className="flex items-center gap-2 bg-slate-700/50 px-3 py-1.5 rounded-lg">
+                <span className="text-sm font-semibold text-white">
+                  {isCorrectNetwork ? formatBalance(usdcBalance) : '--'}
+                </span>
+                <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full font-medium">
+                  USDC · Base
+                </span>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={connectWallet}
+              className="flex items-center gap-2 bg-stark-500/20 hover:bg-stark-500/30 text-stark-400 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+            >
+              <Wallet className="w-4 h-4" />
+              Connect Wallet
+            </button>
+          )}
+
           <Button
             variant="ghost"
             size="sm"

@@ -13,6 +13,7 @@ pub struct OpenAIClient {
     client: Client,
     endpoint: String,
     model: String,
+    max_tokens: u32,
     x402_client: Option<Arc<X402Client>>,
 }
 
@@ -95,7 +96,7 @@ struct OpenAIError {
 
 impl OpenAIClient {
     pub fn new(api_key: &str, endpoint: Option<&str>, model: Option<&str>) -> Result<Self, String> {
-        Self::new_with_x402(api_key, endpoint, model, None)
+        Self::new_with_x402_and_tokens(api_key, endpoint, model, None, None)
     }
 
     pub fn new_with_x402(
@@ -103,6 +104,16 @@ impl OpenAIClient {
         endpoint: Option<&str>,
         model: Option<&str>,
         burner_private_key: Option<&str>,
+    ) -> Result<Self, String> {
+        Self::new_with_x402_and_tokens(api_key, endpoint, model, burner_private_key, None)
+    }
+
+    pub fn new_with_x402_and_tokens(
+        api_key: &str,
+        endpoint: Option<&str>,
+        model: Option<&str>,
+        burner_private_key: Option<&str>,
+        max_tokens: Option<u32>,
     ) -> Result<Self, String> {
         let endpoint_url = endpoint
             .unwrap_or("https://api.openai.com/v1/chat/completions")
@@ -153,10 +164,25 @@ impl OpenAIClient {
             None
         };
 
+        // Determine model with smart defaults based on endpoint
+        let model_name = match model {
+            Some(m) if !m.is_empty() => m.to_string(),
+            _ => {
+                // Use endpoint-specific defaults for known services
+                if endpoint_url.contains("defirelay.com") {
+                    // defirelay endpoints use "default" as model name
+                    "default".to_string()
+                } else {
+                    "gpt-4o".to_string()
+                }
+            }
+        };
+
         Ok(Self {
             client,
             endpoint: endpoint_url,
-            model: model.unwrap_or("gpt-4o").to_string(),
+            model: model_name,
+            max_tokens: max_tokens.unwrap_or(40000),
             x402_client,
         })
     }
@@ -226,7 +252,7 @@ impl OpenAIClient {
         let request = OpenAICompletionRequest {
             model: self.model.clone(),
             messages: api_messages,
-            max_tokens: 4096,
+            max_tokens: self.max_tokens,
             tools: openai_tools.clone(),
             tool_choice: if tools.is_empty() { None } else { Some("auto".to_string()) },
         };

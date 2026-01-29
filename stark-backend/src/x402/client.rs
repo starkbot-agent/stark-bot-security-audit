@@ -100,25 +100,9 @@ impl X402Client {
             .await
             .map_err(|e| format!("Paid request failed: {}", e))?;
 
-        if !paid_response.status().is_success() {
-            let status = paid_response.status();
-            let error_text = paid_response.text().await.unwrap_or_default();
-            return Err(format!("Payment request failed with status {}: {}", status, error_text));
-        }
+        log::info!("[X402] Payment sent, response status: {}", paid_response.status());
 
-        log::info!("[X402] Payment successful!");
-
-        // We need to make the request again since we consumed the response
-        let final_response = self.client
-            .post(url)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header("X-PAYMENT", payment_payload.to_base64()?)
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| format!("Final request failed: {}", e))?;
-
-        Ok(final_response)
+        Ok(paid_response)
     }
 }
 

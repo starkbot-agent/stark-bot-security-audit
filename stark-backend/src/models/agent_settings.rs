@@ -68,6 +68,7 @@ pub struct AgentSettings {
     pub api_key: String,
     pub model: String,
     pub model_archetype: Option<String>,
+    pub max_tokens: i32,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -88,6 +89,7 @@ pub struct AgentSettingsResponse {
     pub api_key: String,
     pub model: String,
     pub model_archetype: Option<String>,
+    pub max_tokens: i32,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -102,6 +104,7 @@ impl From<AgentSettings> for AgentSettingsResponse {
             api_key: settings.api_key,
             model: settings.model,
             model_archetype: settings.model_archetype,
+            max_tokens: settings.max_tokens,
             enabled: settings.enabled,
             created_at: settings.created_at,
             updated_at: settings.updated_at,
@@ -118,4 +121,10 @@ pub struct UpdateAgentSettingsRequest {
     pub api_key: String,
     pub model: Option<String>,
     pub model_archetype: Option<String>,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: i32,
+}
+
+fn default_max_tokens() -> i32 {
+    40000
 }

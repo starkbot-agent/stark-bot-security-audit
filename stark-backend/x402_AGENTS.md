@@ -14,8 +14,10 @@ The x402 protocol enables HTTP-native payments where:
 ## Supported Endpoints
 
 The following endpoints use x402 payment protocol:
-- `https://llama.defirelay.com/v1/chat/completions` - Llama models
-- `https://kimi.defirelay.com/v1/chat/completions` - Kimi models
+- `https://llama.defirelay.com/api/v1/chat/completions` - Llama models
+- `https://kimi.defirelay.com/api/v1/chat/completions` - Kimi models
+
+**Note:** The endpoint path includes `/api/v1/...` not just `/v1/...`
 
 ## Configuration
 

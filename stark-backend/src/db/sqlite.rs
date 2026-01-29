@@ -128,6 +128,20 @@ impl Database {
             conn.execute("ALTER TABLE agent_settings ADD COLUMN model_archetype TEXT", [])?;
         }
 
+        // Migration: Add max_tokens column if it doesn't exist
+        let has_max_tokens: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_settings') WHERE name='max_tokens'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !has_max_tokens {
+            conn.execute("ALTER TABLE agent_settings ADD COLUMN max_tokens INTEGER DEFAULT 40000", [])?;
+        }
+
         // Chat sessions table - conversation context containers
         conn.execute(
             "CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -793,14 +807,14 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, provider, endpoint, api_key, model, model_archetype, enabled, created_at, updated_at
+            "SELECT id, provider, endpoint, api_key, model, model_archetype, max_tokens, enabled, created_at, updated_at
              FROM agent_settings WHERE enabled = 1 LIMIT 1",
         )?;
 
         let settings = stmt
             .query_row([], |row| {
-                let created_at_str: String = row.get(7)?;
-                let updated_at_str: String = row.get(8)?;
+                let created_at_str: String = row.get(8)?;
+                let updated_at_str: String = row.get(9)?;
 
                 Ok(AgentSettings {
                     id: row.get(0)?,
@@ -809,7 +823,8 @@ impl Database {
                     api_key: row.get(3)?,
                     model: row.get(4)?,
                     model_archetype: row.get(5)?,
-                    enabled: row.get::<_, i32>(6)? != 0,
+                    max_tokens: row.get::<_, Option<i32>>(6)?.unwrap_or(40000),
+                    enabled: row.get::<_, i32>(7)? != 0,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .unwrap()
                         .with_timezone(&Utc),
@@ -828,14 +843,14 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, provider, endpoint, api_key, model, model_archetype, enabled, created_at, updated_at
+            "SELECT id, provider, endpoint, api_key, model, model_archetype, max_tokens, enabled, created_at, updated_at
              FROM agent_settings WHERE provider = ?1",
         )?;
 
         let settings = stmt
             .query_row([provider], |row| {
-                let created_at_str: String = row.get(7)?;
-                let updated_at_str: String = row.get(8)?;
+                let created_at_str: String = row.get(8)?;
+                let updated_at_str: String = row.get(9)?;
 
                 Ok(AgentSettings {
                     id: row.get(0)?,
@@ -844,7 +859,8 @@ impl Database {
                     api_key: row.get(3)?,
                     model: row.get(4)?,
                     model_archetype: row.get(5)?,
-                    enabled: row.get::<_, i32>(6)? != 0,
+                    max_tokens: row.get::<_, Option<i32>>(6)?.unwrap_or(40000),
+                    enabled: row.get::<_, i32>(7)? != 0,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .unwrap()
                         .with_timezone(&Utc),
@@ -863,14 +879,14 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, provider, endpoint, api_key, model, model_archetype, enabled, created_at, updated_at
+            "SELECT id, provider, endpoint, api_key, model, model_archetype, max_tokens, enabled, created_at, updated_at
              FROM agent_settings ORDER BY provider",
         )?;
 
         let settings = stmt
             .query_map([], |row| {
-                let created_at_str: String = row.get(7)?;
-                let updated_at_str: String = row.get(8)?;
+                let created_at_str: String = row.get(8)?;
+                let updated_at_str: String = row.get(9)?;
 
                 Ok(AgentSettings {
                     id: row.get(0)?,
@@ -879,7 +895,8 @@ impl Database {
                     api_key: row.get(3)?,
                     model: row.get(4)?,
                     model_archetype: row.get(5)?,
-                    enabled: row.get::<_, i32>(6)? != 0,
+                    max_tokens: row.get::<_, Option<i32>>(6)?.unwrap_or(40000),
+                    enabled: row.get::<_, i32>(7)? != 0,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .unwrap()
                         .with_timezone(&Utc),
@@ -902,6 +919,7 @@ impl Database {
         api_key: &str,
         model: &str,
         model_archetype: Option<&str>,
+        max_tokens: i32,
     ) -> SqliteResult<AgentSettings> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
@@ -921,15 +939,15 @@ impl Database {
         if let Some(id) = existing {
             // Update existing
             conn.execute(
-                "UPDATE agent_settings SET endpoint = ?1, api_key = ?2, model = ?3, model_archetype = ?4, enabled = 1, updated_at = ?5 WHERE id = ?6",
-                rusqlite::params![endpoint, api_key, model, model_archetype, &now, id],
+                "UPDATE agent_settings SET endpoint = ?1, api_key = ?2, model = ?3, model_archetype = ?4, max_tokens = ?5, enabled = 1, updated_at = ?6 WHERE id = ?7",
+                rusqlite::params![endpoint, api_key, model, model_archetype, max_tokens, &now, id],
             )?;
         } else {
             // Insert new
             conn.execute(
-                "INSERT INTO agent_settings (provider, endpoint, api_key, model, model_archetype, enabled, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
-                rusqlite::params![provider, endpoint, api_key, model, model_archetype, &now, &now],
+                "INSERT INTO agent_settings (provider, endpoint, api_key, model, model_archetype, max_tokens, enabled, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
+                rusqlite::params![provider, endpoint, api_key, model, model_archetype, max_tokens, &now, &now],
             )?;
         }
 

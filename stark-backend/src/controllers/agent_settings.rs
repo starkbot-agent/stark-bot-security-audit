@@ -166,13 +166,14 @@ pub async fn update_agent_settings(
 
     // Save settings
     log::info!(
-        "Saving agent settings: provider={}, endpoint={}, model_archetype={:?}",
+        "Saving agent settings: provider={}, endpoint={}, model_archetype={:?}, max_tokens={}",
         request.provider,
         request.endpoint,
-        model_archetype
+        model_archetype,
+        request.max_tokens
     );
 
-    match state.db.save_agent_settings(&request.provider, &request.endpoint, &api_key, &model, model_archetype) {
+    match state.db.save_agent_settings(&request.provider, &request.endpoint, &api_key, &model, model_archetype, request.max_tokens) {
         Ok(settings) => {
             log::info!("Updated agent settings to use {} provider", request.provider);
             let response: AgentSettingsResponse = settings.into();

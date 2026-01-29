@@ -72,22 +72,24 @@ impl AiClient {
             AiProvider::OpenAI | AiProvider::OpenAICompatible => {
                 // Both OpenAI and OpenAI-compatible use the same client
                 // The endpoint from settings is always used
-                let client = OpenAIClient::new_with_x402(
+                let client = OpenAIClient::new_with_x402_and_tokens(
                     &settings.api_key,
                     Some(&settings.endpoint),
                     Some(&settings.model),
                     burner_private_key,
+                    Some(settings.max_tokens as u32),
                 )?;
                 Ok(AiClient::OpenAI(client))
             }
             AiProvider::Llama => {
                 // Llama endpoints may also use x402 (like llama.defirelay.com)
                 // Use OpenAI-compatible client for x402 support
-                let client = OpenAIClient::new_with_x402(
+                let client = OpenAIClient::new_with_x402_and_tokens(
                     "",  // No API key needed for llama endpoints
                     Some(&settings.endpoint),
                     Some(&settings.model),
                     burner_private_key,
+                    Some(settings.max_tokens as u32),
                 )?;
                 Ok(AiClient::OpenAI(client))
             }

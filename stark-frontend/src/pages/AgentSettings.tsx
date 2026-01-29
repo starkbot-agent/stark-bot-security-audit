@@ -6,8 +6,13 @@ import Input from '@/components/ui/Input';
 import { getAgentSettings, updateAgentSettings } from '@/lib/api';
 
 const ENDPOINTS = {
-  llama: 'https://llama.defirelay.com/v1/chat/completions',
-  kimi: 'https://kimi.defirelay.com/v1/chat/completions',
+  llama: 'https://llama.defirelay.com/api/v1/chat/completions',
+  kimi: 'https://kimi.defirelay.com/api/v1/chat/completions',
+};
+
+const DEFAULT_MODELS: Record<string, string> = {
+  llama: 'default',
+  kimi: 'default',
 };
 
 type EndpointOption = 'llama' | 'kimi' | 'custom';
@@ -16,12 +21,14 @@ type ModelArchetype = 'llama' | 'kimi' | 'anthropic' | 'openai';
 interface Settings {
   endpoint?: string;
   model_archetype?: string;
+  max_tokens?: number;
 }
 
 export default function AgentSettings() {
   const [endpointOption, setEndpointOption] = useState<EndpointOption>('llama');
   const [customEndpoint, setCustomEndpoint] = useState('');
   const [modelArchetype, setModelArchetype] = useState<ModelArchetype>('llama');
+  const [maxTokens, setMaxTokens] = useState(40000);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -49,6 +56,11 @@ export default function AgentSettings() {
       // Set model archetype
       if (data.model_archetype && ['llama', 'kimi', 'anthropic', 'openai'].includes(data.model_archetype)) {
         setModelArchetype(data.model_archetype as ModelArchetype);
+      }
+
+      // Set max tokens
+      if (data.max_tokens && data.max_tokens > 0) {
+        setMaxTokens(data.max_tokens);
       }
     } catch (err) {
       setMessage({ type: 'error', text: 'Failed to load settings' });
@@ -78,13 +90,17 @@ export default function AgentSettings() {
     }
 
     try {
+      // Use default model for known endpoints, empty for custom
+      const model = endpointOption === 'custom' ? '' : (DEFAULT_MODELS[endpointOption] || '');
+
       await updateAgentSettings({
         endpoint,
         model_archetype: modelArchetype,
+        max_tokens: maxTokens,
         // Keep these for backend compatibility
         provider: 'openai_compatible',
         api_key: '',
-        model: '',
+        model,
       });
       setMessage({ type: 'success', text: 'Settings saved successfully' });
     } catch (err) {
@@ -159,6 +175,23 @@ export default function AgentSettings() {
                 </select>
                 <p className="text-xs text-slate-500 mt-1">
                   Select the model family to optimize prompt formatting
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Max Tokens
+                </label>
+                <input
+                  type="number"
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(parseInt(e.target.value) || 40000)}
+                  min={1000}
+                  max={200000}
+                  className="w-full px-4 py-3 bg-slate-900/50 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-stark-500 focus:border-transparent"
+                />
+                <p className="text-xs text-slate-500 mt-1">
+                  Maximum tokens for AI response (default: 40,000)
                 </p>
               </div>
             </CardContent>

@@ -4,7 +4,6 @@ import Login from '@/pages/Login';
 import Dashboard from '@/pages/Dashboard';
 import AgentChat from '@/pages/AgentChat';
 import AgentSettings from '@/pages/AgentSettings';
-import ApiKeys from '@/pages/ApiKeys';
 import Channels from '@/pages/Channels';
 import Tools from '@/pages/Tools';
 import Skills from '@/pages/Skills';
@@ -22,7 +21,6 @@ function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/agent-chat" element={<AgentChat />} />
         <Route path="/agent-settings" element={<AgentSettings />} />
-        <Route path="/api-keys" element={<ApiKeys />} />
         <Route path="/channels" element={<Channels />} />
         <Route path="/tools" element={<Tools />} />
         <Route path="/skills" element={<Skills />} />

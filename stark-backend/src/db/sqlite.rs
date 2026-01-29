@@ -106,12 +106,27 @@ impl Database {
                 endpoint TEXT NOT NULL,
                 api_key TEXT NOT NULL,
                 model TEXT NOT NULL,
+                model_archetype TEXT,
                 enabled INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
             [],
         )?;
+
+        // Migration: Add model_archetype column if it doesn't exist
+        let has_model_archetype: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_settings') WHERE name='model_archetype'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !has_model_archetype {
+            conn.execute("ALTER TABLE agent_settings ADD COLUMN model_archetype TEXT", [])?;
+        }
 
         // Chat sessions table - conversation context containers
         conn.execute(
@@ -778,14 +793,14 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, provider, endpoint, api_key, model, enabled, created_at, updated_at
+            "SELECT id, provider, endpoint, api_key, model, model_archetype, enabled, created_at, updated_at
              FROM agent_settings WHERE enabled = 1 LIMIT 1",
         )?;
 
         let settings = stmt
             .query_row([], |row| {
-                let created_at_str: String = row.get(6)?;
-                let updated_at_str: String = row.get(7)?;
+                let created_at_str: String = row.get(7)?;
+                let updated_at_str: String = row.get(8)?;
 
                 Ok(AgentSettings {
                     id: row.get(0)?,
@@ -793,7 +808,8 @@ impl Database {
                     endpoint: row.get(2)?,
                     api_key: row.get(3)?,
                     model: row.get(4)?,
-                    enabled: row.get::<_, i32>(5)? != 0,
+                    model_archetype: row.get(5)?,
+                    enabled: row.get::<_, i32>(6)? != 0,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .unwrap()
                         .with_timezone(&Utc),
@@ -812,14 +828,14 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, provider, endpoint, api_key, model, enabled, created_at, updated_at
+            "SELECT id, provider, endpoint, api_key, model, model_archetype, enabled, created_at, updated_at
              FROM agent_settings WHERE provider = ?1",
         )?;
 
         let settings = stmt
             .query_row([provider], |row| {
-                let created_at_str: String = row.get(6)?;
-                let updated_at_str: String = row.get(7)?;
+                let created_at_str: String = row.get(7)?;
+                let updated_at_str: String = row.get(8)?;
 
                 Ok(AgentSettings {
                     id: row.get(0)?,
@@ -827,7 +843,8 @@ impl Database {
                     endpoint: row.get(2)?,
                     api_key: row.get(3)?,
                     model: row.get(4)?,
-                    enabled: row.get::<_, i32>(5)? != 0,
+                    model_archetype: row.get(5)?,
+                    enabled: row.get::<_, i32>(6)? != 0,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .unwrap()
                         .with_timezone(&Utc),
@@ -846,14 +863,14 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, provider, endpoint, api_key, model, enabled, created_at, updated_at
+            "SELECT id, provider, endpoint, api_key, model, model_archetype, enabled, created_at, updated_at
              FROM agent_settings ORDER BY provider",
         )?;
 
         let settings = stmt
             .query_map([], |row| {
-                let created_at_str: String = row.get(6)?;
-                let updated_at_str: String = row.get(7)?;
+                let created_at_str: String = row.get(7)?;
+                let updated_at_str: String = row.get(8)?;
 
                 Ok(AgentSettings {
                     id: row.get(0)?,
@@ -861,7 +878,8 @@ impl Database {
                     endpoint: row.get(2)?,
                     api_key: row.get(3)?,
                     model: row.get(4)?,
-                    enabled: row.get::<_, i32>(5)? != 0,
+                    model_archetype: row.get(5)?,
+                    enabled: row.get::<_, i32>(6)? != 0,
                     created_at: DateTime::parse_from_rfc3339(&created_at_str)
                         .unwrap()
                         .with_timezone(&Utc),
@@ -883,6 +901,7 @@ impl Database {
         endpoint: &str,
         api_key: &str,
         model: &str,
+        model_archetype: Option<&str>,
     ) -> SqliteResult<AgentSettings> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
@@ -902,15 +921,15 @@ impl Database {
         if let Some(id) = existing {
             // Update existing
             conn.execute(
-                "UPDATE agent_settings SET endpoint = ?1, api_key = ?2, model = ?3, enabled = 1, updated_at = ?4 WHERE id = ?5",
-                rusqlite::params![endpoint, api_key, model, &now, id],
+                "UPDATE agent_settings SET endpoint = ?1, api_key = ?2, model = ?3, model_archetype = ?4, enabled = 1, updated_at = ?5 WHERE id = ?6",
+                rusqlite::params![endpoint, api_key, model, model_archetype, &now, id],
             )?;
         } else {
             // Insert new
             conn.execute(
-                "INSERT INTO agent_settings (provider, endpoint, api_key, model, enabled, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6)",
-                rusqlite::params![provider, endpoint, api_key, model, &now, &now],
+                "INSERT INTO agent_settings (provider, endpoint, api_key, model, model_archetype, enabled, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+                rusqlite::params![provider, endpoint, api_key, model, model_archetype, &now, &now],
             )?;
         }
 

@@ -36,6 +36,7 @@ pub struct MessageDispatcher {
     broadcaster: Arc<EventBroadcaster>,
     tool_registry: Arc<ToolRegistry>,
     execution_tracker: Arc<ExecutionTracker>,
+    burner_wallet_private_key: Option<String>,
     // Regex patterns for memory markers
     daily_log_pattern: Regex,
     remember_pattern: Regex,
@@ -49,11 +50,22 @@ impl MessageDispatcher {
         tool_registry: Arc<ToolRegistry>,
         execution_tracker: Arc<ExecutionTracker>,
     ) -> Self {
+        Self::new_with_wallet(db, broadcaster, tool_registry, execution_tracker, None)
+    }
+
+    pub fn new_with_wallet(
+        db: Arc<Database>,
+        broadcaster: Arc<EventBroadcaster>,
+        tool_registry: Arc<ToolRegistry>,
+        execution_tracker: Arc<ExecutionTracker>,
+        burner_wallet_private_key: Option<String>,
+    ) -> Self {
         Self {
             db,
             broadcaster,
             tool_registry,
             execution_tracker,
+            burner_wallet_private_key,
             daily_log_pattern: Regex::new(r"\[DAILY_LOG:\s*(.+?)\]").unwrap(),
             remember_pattern: Regex::new(r"\[REMEMBER:\s*(.+?)\]").unwrap(),
             remember_important_pattern: Regex::new(r"\[REMEMBER_IMPORTANT:\s*(.+?)\]").unwrap(),
@@ -69,6 +81,7 @@ impl MessageDispatcher {
             broadcaster,
             tool_registry: Arc::new(ToolRegistry::new()),
             execution_tracker,
+            burner_wallet_private_key: None,
             daily_log_pattern: Regex::new(r"\[DAILY_LOG:\s*(.+?)\]").unwrap(),
             remember_pattern: Regex::new(r"\[REMEMBER:\s*(.+?)\]").unwrap(),
             remember_important_pattern: Regex::new(r"\[REMEMBER_IMPORTANT:\s*(.+?)\]").unwrap(),
@@ -168,8 +181,11 @@ impl MessageDispatcher {
             settings.api_key.len()
         );
 
-        // Create AI client from settings
-        let client = match AiClient::from_settings(&settings) {
+        // Create AI client from settings with x402 wallet support
+        let client = match AiClient::from_settings_with_wallet(
+            &settings,
+            self.burner_wallet_private_key.as_deref(),
+        ) {
             Ok(c) => c,
             Err(e) => {
                 let error = format!("Failed to create AI client: {}", e);

@@ -48,6 +48,14 @@ pub enum AiClient {
 impl AiClient {
     /// Create an AI client from agent settings
     pub fn from_settings(settings: &AgentSettings) -> Result<Self, String> {
+        Self::from_settings_with_wallet(settings, None)
+    }
+
+    /// Create an AI client from agent settings with optional burner wallet for x402
+    pub fn from_settings_with_wallet(
+        settings: &AgentSettings,
+        burner_private_key: Option<&str>,
+    ) -> Result<Self, String> {
         let provider = settings.provider_enum().ok_or_else(|| {
             format!("Unknown provider: {}", settings.provider)
         })?;
@@ -64,19 +72,24 @@ impl AiClient {
             AiProvider::OpenAI | AiProvider::OpenAICompatible => {
                 // Both OpenAI and OpenAI-compatible use the same client
                 // The endpoint from settings is always used
-                let client = OpenAIClient::new(
+                let client = OpenAIClient::new_with_x402(
                     &settings.api_key,
                     Some(&settings.endpoint),
                     Some(&settings.model),
+                    burner_private_key,
                 )?;
                 Ok(AiClient::OpenAI(client))
             }
             AiProvider::Llama => {
-                let client = LlamaClient::new(
+                // Llama endpoints may also use x402 (like llama.defirelay.com)
+                // Use OpenAI-compatible client for x402 support
+                let client = OpenAIClient::new_with_x402(
+                    "",  // No API key needed for llama endpoints
                     Some(&settings.endpoint),
                     Some(&settings.model),
+                    burner_private_key,
                 )?;
-                Ok(AiClient::Llama(client))
+                Ok(AiClient::OpenAI(client))
             }
         }
     }

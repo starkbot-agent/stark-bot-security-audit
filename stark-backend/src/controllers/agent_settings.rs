@@ -139,11 +139,11 @@ pub async fn update_agent_settings(
     let request = body.into_inner();
 
     // Validate provider
-    let provider = match AiProvider::from_str(&request.provider) {
+    let _provider = match AiProvider::from_str(&request.provider) {
         Some(p) => p,
         None => {
             return HttpResponse::BadRequest().json(serde_json::json!({
-                "error": format!("Invalid provider: {}. Must be claude, openai, or llama.", request.provider)
+                "error": format!("Invalid provider: {}. Must be claude, openai, openai_compatible, or llama.", request.provider)
             }));
         }
     };
@@ -155,42 +155,26 @@ pub async fn update_agent_settings(
         }));
     }
 
-    // Get existing settings to preserve API key if not provided
-    let existing_api_key = state.db.get_agent_settings_by_provider(&request.provider)
-        .ok()
-        .flatten()
-        .map(|s| s.api_key)
-        .unwrap_or_default();
-
-    // Use provided API key, or fall back to existing one
-    let api_key = if request.api_key.is_empty() {
-        existing_api_key
-    } else {
-        request.api_key.clone()
-    };
-
-    // API key is required for Claude, OpenAI, and OpenAI-compatible; optional for Llama
-    if api_key.is_empty() && provider != AiProvider::Llama {
-        return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "API key is required for this provider"
-        }));
-    }
+    // API key is now optional (llama.defirelay.com doesn't need it)
+    let api_key = request.api_key.clone();
 
     // Model is optional - use provided or empty string (some endpoints auto-select)
     let model = request.model.clone().unwrap_or_default();
 
+    // Model archetype for prompt formatting
+    let model_archetype = request.model_archetype.as_deref();
+
     // Save settings
     log::info!(
-        "Saving agent settings: provider={}, endpoint={}, api_key_len={}, model={}",
+        "Saving agent settings: provider={}, endpoint={}, model_archetype={:?}",
         request.provider,
         request.endpoint,
-        api_key.len(),
-        model
+        model_archetype
     );
 
-    match state.db.save_agent_settings(&request.provider, &request.endpoint, &api_key, &model) {
+    match state.db.save_agent_settings(&request.provider, &request.endpoint, &api_key, &model, model_archetype) {
         Ok(settings) => {
-            log::info!("Updated agent settings to use {} provider, api_key stored: {}", request.provider, !settings.api_key.is_empty());
+            log::info!("Updated agent settings to use {} provider", request.provider);
             let response: AgentSettingsResponse = settings.into();
             HttpResponse::Ok().json(response)
         }

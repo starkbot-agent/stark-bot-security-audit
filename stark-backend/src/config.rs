@@ -3,6 +3,7 @@ use std::env;
 #[derive(Clone)]
 pub struct Config {
     pub login_admin_public_address: String,
+    pub burner_wallet_private_key: Option<String>,
     pub port: u16,
     pub gateway_port: u16,
     pub database_url: String,
@@ -13,6 +14,7 @@ impl Config {
         Self {
             login_admin_public_address: env::var("LOGIN_ADMIN_PUBLIC_ADDRESS")
                 .expect("LOGIN_ADMIN_PUBLIC_ADDRESS must be set"),
+            burner_wallet_private_key: env::var("BURNER_WALLET_BOT_PRIVATE_KEY").ok(),
             port: env::var("PORT")
                 .unwrap_or_else(|_| "8080".to_string())
                 .parse()

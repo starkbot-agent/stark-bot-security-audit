@@ -5,15 +5,23 @@ import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
 import { getAgentSettings, updateAgentSettings } from '@/lib/api';
 
+const ENDPOINTS = {
+  llama: 'https://llama.defirelay.com/v1/chat/completions',
+  kimi: 'https://kimi.defirelay.com/v1/chat/completions',
+};
+
+type EndpointOption = 'llama' | 'kimi' | 'custom';
+type ModelArchetype = 'llama' | 'kimi' | 'anthropic' | 'openai';
+
 interface Settings {
-  provider?: string;
   endpoint?: string;
-  api_key?: string;
-  model?: string;
+  model_archetype?: string;
 }
 
 export default function AgentSettings() {
-  const [settings, setSettings] = useState<Settings>({});
+  const [endpointOption, setEndpointOption] = useState<EndpointOption>('llama');
+  const [customEndpoint, setCustomEndpoint] = useState('');
+  const [modelArchetype, setModelArchetype] = useState<ModelArchetype>('llama');
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -24,8 +32,24 @@ export default function AgentSettings() {
 
   const loadSettings = async () => {
     try {
-      const data = await getAgentSettings();
-      setSettings(data as Settings);
+      const data = await getAgentSettings() as Settings;
+
+      // Determine which endpoint option is being used
+      if (data.endpoint === ENDPOINTS.llama) {
+        setEndpointOption('llama');
+      } else if (data.endpoint === ENDPOINTS.kimi) {
+        setEndpointOption('kimi');
+      } else if (data.endpoint) {
+        setEndpointOption('custom');
+        setCustomEndpoint(data.endpoint);
+      } else {
+        setEndpointOption('llama');
+      }
+
+      // Set model archetype
+      if (data.model_archetype && ['llama', 'kimi', 'anthropic', 'openai'].includes(data.model_archetype)) {
+        setModelArchetype(data.model_archetype as ModelArchetype);
+      }
     } catch (err) {
       setMessage({ type: 'error', text: 'Failed to load settings' });
     } finally {
@@ -38,32 +62,36 @@ export default function AgentSettings() {
     setIsSaving(true);
     setMessage(null);
 
+    let endpoint: string;
+    if (endpointOption === 'llama') {
+      endpoint = ENDPOINTS.llama;
+    } else if (endpointOption === 'kimi') {
+      endpoint = ENDPOINTS.kimi;
+    } else {
+      endpoint = customEndpoint;
+    }
+
+    if (endpointOption === 'custom' && !customEndpoint.trim()) {
+      setMessage({ type: 'error', text: 'Please enter a custom endpoint URL' });
+      setIsSaving(false);
+      return;
+    }
+
     try {
       await updateAgentSettings({
-        provider: settings.provider || 'openai_compatible',
-        endpoint: settings.endpoint || '',
-        api_key: settings.api_key || '',
-        model: settings.model || '',
+        endpoint,
+        model_archetype: modelArchetype,
+        // Keep these for backend compatibility
+        provider: 'openai_compatible',
+        api_key: '',
+        model: '',
       });
       setMessage({ type: 'success', text: 'Settings saved successfully' });
-      // Reload to confirm saved values
-      await loadSettings();
     } catch (err) {
       setMessage({ type: 'error', text: 'Failed to save settings' });
     } finally {
       setIsSaving(false);
     }
-  };
-
-  const handleProviderChange = (provider: string) => {
-    setSettings((prev) => ({
-      ...prev,
-      provider,
-    }));
-  };
-
-  const updateField = (field: keyof Settings, value: string) => {
-    setSettings((prev) => ({ ...prev, [field]: value }));
   };
 
   if (isLoading) {
@@ -81,55 +109,58 @@ export default function AgentSettings() {
     <div className="p-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-white mb-2">Agent Settings</h1>
-        <p className="text-slate-400">Configure your AI agent's provider and connection</p>
+        <p className="text-slate-400">Configure your AI agent endpoint and model type</p>
       </div>
 
       <form onSubmit={handleSubmit}>
         <div className="grid gap-6 max-w-2xl">
           <Card>
             <CardHeader>
-              <CardTitle>Provider Configuration</CardTitle>
+              <CardTitle>Endpoint Configuration</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
-                  Provider Type
+                  Agent Endpoint
                 </label>
                 <select
-                  value={settings.provider || 'openai_compatible'}
-                  onChange={(e) => handleProviderChange(e.target.value)}
+                  value={endpointOption}
+                  onChange={(e) => setEndpointOption(e.target.value as EndpointOption)}
                   className="w-full px-4 py-3 bg-slate-900/50 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-stark-500 focus:border-transparent"
                 >
-                  <option value="openai_compatible">OpenAI Compatible (DigitalOcean, Azure, etc.)</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="claude">Anthropic (Claude)</option>
-                  <option value="llama">Ollama (Local)</option>
+                  <option value="llama">llama.defirelay.com</option>
+                  <option value="kimi">kimi.defirelay.com</option>
+                  <option value="custom">Custom Endpoint</option>
                 </select>
-                <p className="text-xs text-slate-500 mt-1">
-                  Most cloud AI endpoints use OpenAI-compatible API format
-                </p>
               </div>
 
-              <Input
-                label="API Endpoint URL"
-                value={settings.endpoint || ''}
-                onChange={(e) => updateField('endpoint', e.target.value)}
-                placeholder="https://your-endpoint.com/v1/chat/completions"
-              />
+              {endpointOption === 'custom' && (
+                <Input
+                  label="Custom Endpoint URL"
+                  value={customEndpoint}
+                  onChange={(e) => setCustomEndpoint(e.target.value)}
+                  placeholder="https://your-endpoint.com/v1/chat/completions"
+                />
+              )}
 
-              <Input
-                label="Model Name (optional)"
-                value={settings.model || ''}
-                onChange={(e) => updateField('model', e.target.value)}
-                placeholder="gpt-4o, claude-sonnet-4, llama3.2, etc."
-              />
-
-              <Input
-                label="API Key"
-                value={settings.api_key || ''}
-                onChange={(e) => updateField('api_key', e.target.value)}
-                placeholder="Enter your API key"
-              />
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Model Archetype
+                </label>
+                <select
+                  value={modelArchetype}
+                  onChange={(e) => setModelArchetype(e.target.value as ModelArchetype)}
+                  className="w-full px-4 py-3 bg-slate-900/50 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-stark-500 focus:border-transparent"
+                >
+                  <option value="llama">Llama</option>
+                  <option value="kimi">Kimi</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="openai">OpenAI</option>
+                </select>
+                <p className="text-xs text-slate-500 mt-1">
+                  Select the model family to optimize prompt formatting
+                </p>
+              </div>
             </CardContent>
           </Card>
 

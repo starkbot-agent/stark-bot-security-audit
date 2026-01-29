@@ -36,10 +36,12 @@ dashmap = "5"
 # Regex for memory marker parsing
 regex = "1"
 
-# SIWE (Sign In With Ethereum) authentication
+# SIWE (Sign In With Ethereum) authentication and x402 payments
 ethers = "2.0"
 hex = "0.4"
 rand = "0.8"
+getrandom = "0.2"
+base64 = "0.21"
 
 # Tools system
 which = "5"

@@ -15,6 +15,7 @@ mod middleware;
 mod models;
 mod skills;
 mod tools;
+mod x402;
 
 use channels::MessageDispatcher;
 use config::Config;
@@ -73,11 +74,12 @@ async fn main() -> std::io::Result<()> {
 
     // Create the shared MessageDispatcher for all message processing
     log::info!("Initializing message dispatcher");
-    let dispatcher = Arc::new(MessageDispatcher::new(
+    let dispatcher = Arc::new(MessageDispatcher::new_with_wallet(
         db.clone(),
         gateway.broadcaster().clone(),
         tool_registry.clone(),
         execution_tracker.clone(),
+        config.burner_wallet_private_key.clone(),
     ));
 
     // Start Gateway WebSocket server

@@ -1,16 +1,19 @@
 use crate::ai::types::{AiResponse, ToolCall};
 use crate::ai::Message;
 use crate::tools::ToolDefinition;
+use crate::x402::{X402Client, is_x402_endpoint};
 use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAIClient {
     client: Client,
     endpoint: String,
     model: String,
+    x402_client: Option<Arc<X402Client>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,15 +95,31 @@ struct OpenAIError {
 
 impl OpenAIClient {
     pub fn new(api_key: &str, endpoint: Option<&str>, model: Option<&str>) -> Result<Self, String> {
+        Self::new_with_x402(api_key, endpoint, model, None)
+    }
+
+    pub fn new_with_x402(
+        api_key: &str,
+        endpoint: Option<&str>,
+        model: Option<&str>,
+        burner_private_key: Option<&str>,
+    ) -> Result<Self, String> {
+        let endpoint_url = endpoint
+            .unwrap_or("https://api.openai.com/v1/chat/completions")
+            .to_string();
+
         let mut headers = header::HeaderMap::new();
         headers.insert(
             header::CONTENT_TYPE,
             header::HeaderValue::from_static("application/json"),
         );
 
-        let auth_value = header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-            .map_err(|e| format!("Invalid API key format: {}", e))?;
-        headers.insert(header::AUTHORIZATION, auth_value);
+        // Only add auth header if API key is provided and not empty
+        if !api_key.is_empty() {
+            let auth_value = header::HeaderValue::from_str(&format!("Bearer {}", api_key))
+                .map_err(|e| format!("Invalid API key format: {}", e))?;
+            headers.insert(header::AUTHORIZATION, auth_value);
+        }
 
         let client = Client::builder()
             .default_headers(headers)
@@ -108,12 +127,37 @@ impl OpenAIClient {
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
+        // Create x402 client if private key is provided and endpoint uses x402
+        let x402_client = if is_x402_endpoint(&endpoint_url) {
+            if let Some(pk) = burner_private_key {
+                if !pk.is_empty() {
+                    match X402Client::new(pk) {
+                        Ok(c) => {
+                            log::info!("[AI] x402 enabled for endpoint {} with wallet {}", endpoint_url, c.wallet_address());
+                            Some(Arc::new(c))
+                        }
+                        Err(e) => {
+                            log::warn!("[AI] Failed to create x402 client: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    log::warn!("[AI] x402 endpoint {} requires BURNER_WALLET_BOT_PRIVATE_KEY", endpoint_url);
+                    None
+                }
+            } else {
+                log::warn!("[AI] x402 endpoint {} requires BURNER_WALLET_BOT_PRIVATE_KEY", endpoint_url);
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             client,
-            endpoint: endpoint
-                .unwrap_or("https://api.openai.com/v1/chat/completions")
-                .to_string(),
+            endpoint: endpoint_url,
             model: model.unwrap_or("gpt-4o").to_string(),
+            x402_client,
         })
     }
 
@@ -189,23 +233,30 @@ impl OpenAIClient {
 
         // Debug: Log full request details
         log::info!(
-            "[OPENAI] Sending request to {} with model {} and {} tools",
+            "[OPENAI] Sending request to {} with model {} and {} tools (x402: {})",
             self.endpoint,
             self.model,
-            openai_tools.as_ref().map(|t| t.len()).unwrap_or(0)
+            openai_tools.as_ref().map(|t| t.len()).unwrap_or(0),
+            self.x402_client.is_some()
         );
         log::debug!(
             "[OPENAI] Full request:\n{}",
             serde_json::to_string_pretty(&request).unwrap_or_default()
         );
 
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("OpenAI API request failed: {}", e))?;
+        // Use x402 client if available, otherwise use regular client
+        let response = if let Some(ref x402) = self.x402_client {
+            x402.post_with_payment(&self.endpoint, &request)
+                .await
+                .map_err(|e| format!("x402 request failed: {}", e))?
+        } else {
+            self.client
+                .post(&self.endpoint)
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| format!("OpenAI API request failed: {}", e))?
+        };
 
         let status = response.status();
         if !status.is_success() {

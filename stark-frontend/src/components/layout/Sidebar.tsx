@@ -3,7 +3,6 @@ import {
   MessageSquare,
   Monitor,
   Settings,
-  Key,
   Wrench,
   Zap,
   Calendar,
@@ -34,7 +33,6 @@ export default function Sidebar() {
           <NavItem to="/agent-chat" icon={MessageSquare} label="Agent Chat" />
           <NavItem to="/channels" icon={Monitor} label="Channels" />
           <NavItem to="/agent-settings" icon={Settings} label="Agent Settings" />
-          <NavItem to="/api-keys" icon={Key} label="API Keys" />
           <NavItem to="/tools" icon={Wrench} label="Tools" />
           <NavItem to="/skills" icon={Zap} label="Skills" />
         </div>

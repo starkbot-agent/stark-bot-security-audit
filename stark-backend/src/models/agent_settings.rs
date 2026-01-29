@@ -67,6 +67,7 @@ pub struct AgentSettings {
     pub endpoint: String,
     pub api_key: String,
     pub model: String,
+    pub model_archetype: Option<String>,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -86,6 +87,7 @@ pub struct AgentSettingsResponse {
     pub endpoint: String,
     pub api_key: String,
     pub model: String,
+    pub model_archetype: Option<String>,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -99,6 +101,7 @@ impl From<AgentSettings> for AgentSettingsResponse {
             endpoint: settings.endpoint,
             api_key: settings.api_key,
             model: settings.model,
+            model_archetype: settings.model_archetype,
             enabled: settings.enabled,
             created_at: settings.created_at,
             updated_at: settings.updated_at,
@@ -111,6 +114,8 @@ impl From<AgentSettings> for AgentSettingsResponse {
 pub struct UpdateAgentSettingsRequest {
     pub provider: String,
     pub endpoint: String,
+    #[serde(default)]
     pub api_key: String,
     pub model: Option<String>,
+    pub model_archetype: Option<String>,
 }

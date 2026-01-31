@@ -433,7 +433,19 @@ impl OpenAIClient {
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
 
-                if is_retryable && attempt < MAX_RETRIES {
+                // Check if this is a transient 402 error (payment settlement network failure)
+                // These contain patterns like "connection failed", "error sending request", etc.
+                let is_transient_402 = status_code == 402 && (
+                    error_text.contains("connection failed") ||
+                    error_text.contains("Connection failed") ||
+                    error_text.contains("error sending request") ||
+                    error_text.contains("timed out") ||
+                    error_text.contains("timeout") ||
+                    error_text.contains("temporarily unavailable") ||
+                    error_text.contains("network error")
+                );
+
+                if (is_retryable || is_transient_402) && attempt < MAX_RETRIES {
                     log::warn!(
                         "[OPENAI] Received retryable status {} (attempt {}), will retry: {}",
                         status,
@@ -702,7 +714,18 @@ impl OpenAIClient {
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
 
-                if is_retryable && attempt < MAX_RETRIES {
+                // Check if this is a transient 402 error (payment settlement network failure)
+                let is_transient_402 = status_code == 402 && (
+                    error_text.contains("connection failed") ||
+                    error_text.contains("Connection failed") ||
+                    error_text.contains("error sending request") ||
+                    error_text.contains("timed out") ||
+                    error_text.contains("timeout") ||
+                    error_text.contains("temporarily unavailable") ||
+                    error_text.contains("network error")
+                );
+
+                if (is_retryable || is_transient_402) && attempt < MAX_RETRIES {
                     log::warn!(
                         "[OPENAI] Streaming received retryable status {} (attempt {}), will retry",
                         status,

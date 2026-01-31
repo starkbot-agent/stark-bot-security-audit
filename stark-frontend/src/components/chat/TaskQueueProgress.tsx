@@ -92,17 +92,28 @@ export default function TaskQueueProgress({ className }: TaskQueueProgressProps)
     }, 3000);
   }, []);
 
+  // Handle execution stopped (user clicked stop button)
+  const handleExecutionStopped = useCallback((data: unknown) => {
+    if (!isWebChannelEvent(data)) return;
+    console.log('[TaskQueueProgress] Execution stopped, clearing tasks');
+    // Clear tasks immediately when execution is stopped
+    setVisible(false);
+    setTasks([]);
+  }, []);
+
   useEffect(() => {
     on('task.queue_update', handleTaskQueueUpdate);
     on('task.status_change', handleTaskStatusChange);
     on('session.complete', handleSessionComplete);
+    on('execution.stopped', handleExecutionStopped);
 
     return () => {
       off('task.queue_update', handleTaskQueueUpdate);
       off('task.status_change', handleTaskStatusChange);
       off('session.complete', handleSessionComplete);
+      off('execution.stopped', handleExecutionStopped);
     };
-  }, [on, off, handleTaskQueueUpdate, handleTaskStatusChange, handleSessionComplete]);
+  }, [on, off, handleTaskQueueUpdate, handleTaskStatusChange, handleSessionComplete, handleExecutionStopped]);
 
   if (!visible || tasks.length === 0) {
     return null;

@@ -24,7 +24,7 @@ fn register_all_tools(registry: &mut ToolRegistry) {
     registry.register(Arc::new(builtin::AskUserTool::new()));
     registry.register(Arc::new(builtin::SayToUserTool::new()));
     registry.register(Arc::new(builtin::MultiMemorySearchTool::new()));
-    registry.register(Arc::new(builtin::MemoryGetTool::new()));
+    // registry.register(Arc::new(builtin::MemoryGetTool::new())); // temporarily disabled
     registry.register(Arc::new(builtin::MemoryStoreTool::new()));
     registry.register(Arc::new(builtin::ModifySoulTool::new()));
     registry.register(Arc::new(builtin::ApiKeysCheckTool::new()));

@@ -289,12 +289,13 @@ impl SubAgentManager {
             settings
         };
 
-        // Create AI client
+        // Create AI client with broadcaster for retry events
         let client = AiClient::from_settings_with_wallet(
             &effective_settings,
             burner_wallet_private_key.as_deref(),
         )
-        .map_err(|e| format!("Failed to create AI client: {}", e))?;
+        .map_err(|e| format!("Failed to create AI client: {}", e))?
+        .with_broadcaster(Arc::clone(&broadcaster), context.parent_channel_id);
 
         // Build the task prompt
         let mut task_prompt = context.task.clone();
@@ -365,6 +366,7 @@ impl SubAgentManager {
 
             // Execute tool calls
             let mut tool_responses = Vec::new();
+            let mut task_completed = false;
             for tool_call in &response.tool_calls {
                 log::info!(
                     "[SUBAGENT] {} calling tool: {}",
@@ -376,11 +378,29 @@ impl SubAgentManager {
                     .execute(&tool_call.name, tool_call.arguments.clone(), &tool_context, Some(&tool_config))
                     .await;
 
+                // Check if task_fully_completed was called - stop the loop
+                if let Some(ref metadata) = result.metadata {
+                    if metadata.get("task_fully_completed").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        log::info!("[SUBAGENT] {} task_fully_completed called, stopping loop", context.id);
+                        if let Some(summary) = metadata.get("summary").and_then(|v| v.as_str()) {
+                            final_response = summary.to_string();
+                        } else if !result.content.is_empty() {
+                            final_response = result.content.clone();
+                        }
+                        task_completed = true;
+                    }
+                }
+
                 tool_responses.push(crate::ai::ToolResponse {
                     tool_call_id: tool_call.id.clone(),
                     content: result.content.clone(),
                     is_error: !result.success,
                 });
+            }
+
+            // If task_fully_completed was called, break the loop immediately
+            if task_completed {
+                break;
             }
 
             // Add to history

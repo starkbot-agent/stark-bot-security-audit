@@ -1,6 +1,8 @@
 use crate::ai::streaming::{StreamEvent, StreamSender};
 use crate::ai::types::{AiResponse, ToolCall};
 use crate::ai::Message;
+use crate::gateway::events::EventBroadcaster;
+use crate::gateway::protocol::GatewayEvent;
 use crate::tools::ToolDefinition;
 use crate::x402::{X402Client, X402PaymentInfo, is_x402_endpoint};
 use futures_util::StreamExt;
@@ -17,6 +19,10 @@ pub struct OpenAIClient {
     model: String,
     max_tokens: u32,
     x402_client: Option<Arc<X402Client>>,
+    /// Optional broadcaster for emitting retry events
+    broadcaster: Option<Arc<EventBroadcaster>>,
+    /// Channel ID for events (set when broadcasting)
+    channel_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -230,7 +236,30 @@ impl OpenAIClient {
             model: model_name,
             max_tokens: max_tokens.unwrap_or(40000),
             x402_client,
+            broadcaster: None,
+            channel_id: None,
         })
+    }
+
+    /// Set the broadcaster for emitting retry events
+    pub fn with_broadcaster(mut self, broadcaster: Arc<EventBroadcaster>, channel_id: i64) -> Self {
+        self.broadcaster = Some(broadcaster);
+        self.channel_id = Some(channel_id);
+        self
+    }
+
+    /// Emit a retry event if broadcaster is configured
+    fn emit_retry_event(&self, attempt: u32, max_attempts: u32, wait_seconds: u64, error: &str) {
+        if let (Some(broadcaster), Some(channel_id)) = (&self.broadcaster, self.channel_id) {
+            broadcaster.broadcast(GatewayEvent::ai_retrying(
+                channel_id,
+                attempt,
+                max_attempts,
+                wait_seconds,
+                error,
+                "openai",
+            ));
+        }
     }
 
     pub async fn generate_text(&self, messages: Vec<Message>) -> Result<String, String> {
@@ -335,40 +364,108 @@ impl OpenAIClient {
             serde_json::to_string_pretty(&request).unwrap_or_default()
         );
 
-        // Use x402 client if available, otherwise use regular client
-        let (response, x402_payment) = if let Some(ref x402) = self.x402_client {
-            let x402_response = x402.post_with_payment(&self.endpoint, &request)
-                .await
-                .map_err(|e| format!("x402 request failed: {}", e))?;
-            (x402_response.response, x402_response.payment)
-        } else {
-            let resp = self.client
-                .post(&self.endpoint)
-                .json(&request)
-                .send()
-                .await
-                .map_err(|e| format!("OpenAI API request failed: {}", e))?;
-            (resp, None)
-        };
+        // Retry configuration for transient errors
+        const MAX_RETRIES: u32 = 3;
+        const BASE_DELAY_MS: u64 = 2000; // 2 seconds base delay
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
+        let mut last_error: Option<String> = None;
+        let mut x402_payment: Option<X402PaymentInfo> = None;
+        let mut response_text: Option<String> = None;
 
-            if let Ok(error_response) = serde_json::from_str::<OpenAIErrorResponse>(&error_text) {
-                return Err(format!("OpenAI API error: {}", error_response.error.message));
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                // Exponential backoff: 2s, 4s, 8s
+                let delay_ms = BASE_DELAY_MS * (1 << (attempt - 1));
+                let wait_secs = delay_ms / 1000;
+                log::warn!(
+                    "[OPENAI] Retry attempt {}/{} after {}ms delay",
+                    attempt,
+                    MAX_RETRIES,
+                    delay_ms
+                );
+                // Emit retry event to frontend
+                self.emit_retry_event(
+                    attempt,
+                    MAX_RETRIES,
+                    wait_secs,
+                    last_error.as_deref().unwrap_or("Unknown error"),
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
 
-            return Err(format!(
-                "OpenAI API returned error status: {}, body: {}",
-                status, error_text
-            ));
+            // Use x402 client if available, otherwise use regular client
+            let request_result = if let Some(ref x402) = self.x402_client {
+                match x402.post_with_payment(&self.endpoint, &request).await {
+                    Ok(x402_response) => {
+                        x402_payment = x402_response.payment;
+                        Ok(x402_response.response)
+                    }
+                    Err(e) => Err(format!("x402 request failed: {}", e)),
+                }
+            } else {
+                self.client
+                    .post(&self.endpoint)
+                    .json(&request)
+                    .send()
+                    .await
+                    .map_err(|e| format!("OpenAI API request failed: {}", e))
+            };
+
+            let response = match request_result {
+                Ok(r) => r,
+                Err(e) => {
+                    // Network errors are retryable
+                    last_error = Some(e.clone());
+                    if attempt < MAX_RETRIES {
+                        log::warn!("[OPENAI] Request failed (attempt {}): {}, will retry", attempt + 1, e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            };
+
+            let status = response.status();
+            let status_code = status.as_u16();
+
+            // Check for retryable status codes: 429 (rate limit), 502, 503, 504 (gateway errors)
+            let is_retryable = matches!(status_code, 429 | 502 | 503 | 504);
+
+            if !status.is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+
+                if is_retryable && attempt < MAX_RETRIES {
+                    log::warn!(
+                        "[OPENAI] Received retryable status {} (attempt {}), will retry: {}",
+                        status,
+                        attempt + 1,
+                        if error_text.len() > 200 { &error_text[..200] } else { &error_text }
+                    );
+                    last_error = Some(format!("HTTP {}: {}", status, error_text));
+                    continue;
+                }
+
+                if let Ok(error_response) = serde_json::from_str::<OpenAIErrorResponse>(&error_text) {
+                    return Err(format!("OpenAI API error: {}", error_response.error.message));
+                }
+
+                return Err(format!(
+                    "OpenAI API returned error status: {}, body: {}",
+                    status, error_text
+                ));
+            }
+
+            // Success - read response body
+            response_text = Some(response
+                .text()
+                .await
+                .map_err(|e| format!("Failed to read OpenAI response: {}", e))?);
+            break;
         }
 
-        let response_text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read OpenAI response: {}", e))?;
+        // If we exhausted retries without success
+        let response_text = response_text.ok_or_else(|| {
+            last_error.unwrap_or_else(|| "Max retries exceeded".to_string())
+        })?;
 
         // Debug: Log raw response
         log::debug!("[OPENAI] Raw response:\n{}", response_text);
@@ -548,23 +645,87 @@ impl OpenAIClient {
             openai_tools.as_ref().map(|t| t.len()).unwrap_or(0),
         );
 
-        // Note: x402 streaming not yet supported, fall back to regular client
-        let response = self.client
-            .post(&self.endpoint)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("OpenAI API streaming request failed: {}", e))?;
+        // Retry configuration for transient errors
+        const MAX_RETRIES: u32 = 3;
+        const BASE_DELAY_MS: u64 = 2000;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            let _ = stream_sender.send(StreamEvent::Error {
-                message: format!("OpenAI API error: {}", error_text),
-                code: Some(status.as_u16().to_string()),
-            }).await;
-            return Err(format!("OpenAI API returned error status: {}", status));
+        let mut last_error: Option<String> = None;
+        let mut response_opt: Option<reqwest::Response> = None;
+
+        // Note: x402 streaming not yet supported, fall back to regular client
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let delay_ms = BASE_DELAY_MS * (1 << (attempt - 1));
+                let wait_secs = delay_ms / 1000;
+                log::warn!(
+                    "[OPENAI] Streaming retry attempt {}/{} after {}ms delay",
+                    attempt,
+                    MAX_RETRIES,
+                    delay_ms
+                );
+                // Emit retry event to frontend
+                self.emit_retry_event(
+                    attempt,
+                    MAX_RETRIES,
+                    wait_secs,
+                    last_error.as_deref().unwrap_or("Unknown error"),
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+
+            let request_result = self.client
+                .post(&self.endpoint)
+                .json(&request)
+                .send()
+                .await;
+
+            let response = match request_result {
+                Ok(r) => r,
+                Err(e) => {
+                    last_error = Some(format!("OpenAI API streaming request failed: {}", e));
+                    if attempt < MAX_RETRIES {
+                        log::warn!("[OPENAI] Streaming request failed (attempt {}): {}, will retry", attempt + 1, e);
+                        continue;
+                    }
+                    let _ = stream_sender.send(StreamEvent::Error {
+                        message: format!("Request failed after {} retries: {}", MAX_RETRIES, e),
+                        code: None,
+                    }).await;
+                    return Err(last_error.unwrap());
+                }
+            };
+
+            let status = response.status();
+            let status_code = status.as_u16();
+            let is_retryable = matches!(status_code, 429 | 502 | 503 | 504);
+
+            if !status.is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+
+                if is_retryable && attempt < MAX_RETRIES {
+                    log::warn!(
+                        "[OPENAI] Streaming received retryable status {} (attempt {}), will retry",
+                        status,
+                        attempt + 1
+                    );
+                    last_error = Some(format!("HTTP {}: {}", status, error_text));
+                    continue;
+                }
+
+                let _ = stream_sender.send(StreamEvent::Error {
+                    message: format!("OpenAI API error: {}", error_text),
+                    code: Some(status_code.to_string()),
+                }).await;
+                return Err(format!("OpenAI API returned error status: {}", status));
+            }
+
+            response_opt = Some(response);
+            break;
         }
+
+        let response = response_opt.ok_or_else(|| {
+            last_error.unwrap_or_else(|| "Max retries exceeded".to_string())
+        })?;
 
         // Process SSE stream
         let mut stream = response.bytes_stream();

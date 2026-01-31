@@ -3,7 +3,7 @@
 use chrono::{DateTime, Timelike, Utc};
 use rusqlite::Result as SqliteResult;
 
-use crate::models::{ChatSession, MessageRole, ResetPolicy, SessionMessage, SessionScope};
+use crate::models::{ChatSession, CompletionStatus, MessageRole, ResetPolicy, SessionMessage, SessionScope};
 use super::super::Database;
 
 impl Database {
@@ -29,7 +29,7 @@ impl Database {
         let now = Utc::now();
         let now_str = now.to_rfc3339();
 
-        // Try to get existing session
+        // Try to get existing active session
         if let Some(mut session) = self.get_chat_session_by_key(&session_key)? {
             // Check if session needs reset based on policy
             let should_reset = match session.reset_policy {
@@ -75,8 +75,25 @@ impl Database {
             return Ok(session);
         }
 
-        // Create new session
+        // No active session found - check if there's an inactive one we can reactivate
         let conn = self.conn.lock().unwrap();
+        let inactive_session_id: Option<i64> = conn.query_row(
+            "SELECT id FROM chat_sessions WHERE session_key = ?1 AND is_active = 0 ORDER BY updated_at DESC LIMIT 1",
+            [&session_key],
+            |row| row.get(0),
+        ).ok();
+
+        if let Some(inactive_id) = inactive_session_id {
+            // Reactivate the existing inactive session
+            conn.execute(
+                "UPDATE chat_sessions SET is_active = 1, last_activity_at = ?1, updated_at = ?1, completion_status = 'active' WHERE id = ?2",
+                rusqlite::params![&now_str, inactive_id],
+            )?;
+            drop(conn);
+            return self.get_chat_session(inactive_id).map(|opt| opt.unwrap());
+        }
+
+        // Create new session
         conn.execute(
             "INSERT INTO chat_sessions (session_key, agent_id, scope, channel_type, channel_id, platform_chat_id,
              is_active, reset_policy, idle_timeout_minutes, daily_reset_hour, created_at, updated_at, last_activity_at)
@@ -159,7 +176,8 @@ impl Database {
     /// Reset a chat session (mark old as inactive, create new)
     pub fn reset_chat_session(&self, id: i64) -> SqliteResult<ChatSession> {
         let conn = self.conn.lock().unwrap();
-        let now = Utc::now().to_rfc3339();
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
 
         // Get the old session info
         let old_session: Option<(String, Option<String>, String, String, i64, String, String, Option<i32>, Option<i32>)> = conn
@@ -171,14 +189,14 @@ impl Database {
             )
             .ok();
 
-        let Some((session_key, agent_id, scope, channel_type, channel_id, platform_chat_id, reset_policy, idle_timeout, daily_hour)) = old_session else {
+        let Some((_old_session_key, agent_id, scope, channel_type, channel_id, _platform_chat_id, reset_policy, idle_timeout, daily_hour)) = old_session else {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         };
 
         // Mark old session as inactive
         conn.execute(
             "UPDATE chat_sessions SET is_active = 0, updated_at = ?1 WHERE id = ?2",
-            rusqlite::params![&now, id],
+            rusqlite::params![&now_str, id],
         )?;
 
         // Delete agent context for the old session
@@ -187,22 +205,27 @@ impl Database {
             rusqlite::params![id],
         )?;
 
-        // Create new session with same settings
+        // Generate new unique session key with timestamp
+        let timestamp = now.timestamp_millis();
+        let new_platform_chat_id = format!("reset-{}", timestamp);
+        let new_session_key = Self::generate_session_key(&channel_type, channel_id, &new_platform_chat_id);
+
+        // Create new session with same settings but new unique key
         conn.execute(
             "INSERT INTO chat_sessions (session_key, agent_id, scope, channel_type, channel_id, platform_chat_id,
              is_active, reset_policy, idle_timeout_minutes, daily_reset_hour, created_at, updated_at, last_activity_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, ?10, ?10)",
             rusqlite::params![
-                &session_key,
+                &new_session_key,
                 agent_id,
                 &scope,
                 &channel_type,
                 channel_id,
-                &platform_chat_id,
+                &new_platform_chat_id,
                 &reset_policy,
                 idle_timeout,
                 daily_hour,
-                &now,
+                &now_str,
             ],
         )?;
 
@@ -288,7 +311,10 @@ impl Database {
             context_tokens: row.get(15).unwrap_or(0),
             max_context_tokens: row.get(16).unwrap_or(100000),
             compaction_id: row.get(17).ok(),
-            completion_status: row.get::<_, String>(18).unwrap_or_else(|_| "active".to_string()),
+            completion_status: {
+                let status_str: String = row.get(18).unwrap_or_else(|_| "active".to_string());
+                CompletionStatus::from_str(&status_str).unwrap_or_default()
+            },
         })
     }
 
@@ -385,6 +411,24 @@ impl Database {
             [session_id],
             |row| row.get(0),
         )
+    }
+
+    /// Get the first user message for a session (for showing initial query)
+    pub fn get_first_user_message(&self, session_id: i64) -> SqliteResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT content FROM session_messages
+             WHERE session_id = ?1 AND role = 'user'
+             ORDER BY created_at ASC LIMIT 1",
+            [session_id],
+            |row| row.get(0),
+        ).map(Some).or_else(|e| {
+            if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                Ok(None)
+            } else {
+                Err(e)
+            }
+        })
     }
 
     fn row_to_session_message(row: &rusqlite::Row) -> rusqlite::Result<SessionMessage> {
@@ -548,23 +592,26 @@ impl Database {
     // ============================================
 
     /// Update the completion status of a session
-    pub fn update_session_completion_status(&self, session_id: i64, status: &str) -> SqliteResult<()> {
+    pub fn update_session_completion_status(&self, session_id: i64, status: CompletionStatus) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE chat_sessions SET completion_status = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![status, &now, session_id],
+            rusqlite::params![status.as_str(), &now, session_id],
         )?;
         Ok(())
     }
 
     /// Get the completion status of a session
-    pub fn get_session_completion_status(&self, session_id: i64) -> SqliteResult<Option<String>> {
+    pub fn get_session_completion_status(&self, session_id: i64) -> SqliteResult<Option<CompletionStatus>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT completion_status FROM chat_sessions WHERE id = ?1",
             [session_id],
-            |row| row.get(0),
+            |row| {
+                let status_str: String = row.get(0)?;
+                Ok(CompletionStatus::from_str(&status_str).unwrap_or_default())
+            },
         ).map(Some).or_else(|e| {
             if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
                 Ok(None)

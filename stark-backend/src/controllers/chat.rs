@@ -2,6 +2,7 @@ use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 
 use crate::channels::NormalizedMessage;
+use crate::models::SessionScope;
 use crate::AppState;
 
 /// Web channel ID - a reserved ID for web-based chat
@@ -44,6 +45,13 @@ pub struct StopResponse {
     pub error: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct ExecutionStatusResponse {
+    pub running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+}
+
 /// Request to cancel a specific subagent
 #[derive(Debug, Deserialize)]
 pub struct CancelSubagentRequest {
@@ -80,8 +88,12 @@ pub struct SubagentListResponse {
 pub fn config(cfg: &mut web::ServiceConfig) {
     cfg.service(web::resource("/api/chat").route(web::post().to(chat)))
         .service(web::resource("/api/chat/stop").route(web::post().to(stop_execution)))
+        .service(web::resource("/api/chat/execution-status").route(web::get().to(get_execution_status)))
         .service(web::resource("/api/chat/subagents").route(web::get().to(list_subagents)))
-        .service(web::resource("/api/chat/subagents/cancel").route(web::post().to(cancel_subagent)));
+        .service(web::resource("/api/chat/subagents/cancel").route(web::post().to(cancel_subagent)))
+        // Session management for web channel
+        .service(web::resource("/api/chat/session").route(web::get().to(get_web_session)))
+        .service(web::resource("/api/chat/session/new").route(web::post().to(new_web_session)));
 }
 
 async fn chat(
@@ -158,6 +170,7 @@ async fn chat(
         user_name: format!("web-user-{}", &user_id[..8.min(user_id.len())]),
         text: user_message,
         message_id: None,
+        session_mode: None,
     };
 
     // Dispatch through the unified pipeline
@@ -239,6 +252,10 @@ async fn stop_execution(
     log::info!("[CHAT_STOP] Stopping execution for web channel {}", WEB_CHANNEL_ID);
     state.execution_tracker.cancel_execution(WEB_CHANNEL_ID);
 
+    // Also cancel any session-based executions running on this channel
+    // This ensures cron jobs running in "main" mode on channel 0 are also stopped
+    state.execution_tracker.cancel_all_sessions_for_channel(WEB_CHANNEL_ID);
+
     // Also cancel any running subagents for this channel and wait for acknowledgment
     let mut subagents_cancelled = 0;
     if let Some(subagent_manager) = state.dispatcher.subagent_manager() {
@@ -258,6 +275,45 @@ async fn stop_execution(
         success: true,
         message: Some(message),
         error: None,
+    })
+}
+
+/// Get the current execution status for the web channel
+async fn get_execution_status(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    // Validate session token
+    let token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim_start_matches("Bearer ").to_string());
+
+    let token = match token {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(ExecutionStatusResponse {
+                running: false,
+                execution_id: None,
+            });
+        }
+    };
+
+    // Validate the session
+    if state.db.validate_session(&token).ok().flatten().is_none() {
+        return HttpResponse::Unauthorized().json(ExecutionStatusResponse {
+            running: false,
+            execution_id: None,
+        });
+    }
+
+    // Get execution ID for the web channel
+    let execution_id = state.execution_tracker.get_execution_id(WEB_CHANNEL_ID);
+
+    HttpResponse::Ok().json(ExecutionStatusResponse {
+        running: execution_id.is_some(),
+        execution_id,
     })
 }
 
@@ -385,5 +441,189 @@ async fn cancel_subagent(
             message: None,
             error: Some("Subagent manager not available".to_string()),
         })
+    }
+}
+
+/// Response for web session endpoints
+#[derive(Serialize)]
+pub struct WebSessionResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Get the current active web session (or create one if none exists)
+async fn get_web_session(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    // Validate session token
+    let token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim_start_matches("Bearer ").to_string());
+
+    let token = match token {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(WebSessionResponse {
+                success: false,
+                session_id: None,
+                completion_status: None,
+                message_count: None,
+                created_at: None,
+                error: Some("No authorization token provided".to_string()),
+            });
+        }
+    };
+
+    // Validate the session
+    if state.db.validate_session(&token).ok().flatten().is_none() {
+        return HttpResponse::Unauthorized().json(WebSessionResponse {
+            success: false,
+            session_id: None,
+            completion_status: None,
+            message_count: None,
+            created_at: None,
+            error: Some("Invalid or expired session".to_string()),
+        });
+    }
+
+    // Get or create the web session
+    // Use token prefix as the platform_chat_id to tie session to the auth token
+    let chat_id = format!("web-{}", &token[..8.min(token.len())]);
+
+    match state.db.get_or_create_chat_session(
+        WEB_CHANNEL_TYPE,
+        WEB_CHANNEL_ID,
+        &chat_id,
+        SessionScope::Dm,
+        None,
+    ) {
+        Ok(session) => {
+            // Get message count
+            let message_count = state.db.count_session_messages(session.id).ok();
+
+            HttpResponse::Ok().json(WebSessionResponse {
+                success: true,
+                session_id: Some(session.id),
+                completion_status: Some(session.completion_status.as_str().to_string()),
+                message_count,
+                created_at: Some(session.created_at.to_rfc3339()),
+                error: None,
+            })
+        }
+        Err(e) => {
+            log::error!("Failed to get or create web session: {}", e);
+            HttpResponse::InternalServerError().json(WebSessionResponse {
+                success: false,
+                session_id: None,
+                completion_status: None,
+                message_count: None,
+                created_at: None,
+                error: Some(format!("Database error: {}", e)),
+            })
+        }
+    }
+}
+
+/// Create a new web session (resets the current one)
+async fn new_web_session(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    // Validate session token
+    let token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim_start_matches("Bearer ").to_string());
+
+    let token = match token {
+        Some(t) => t,
+        None => {
+            return HttpResponse::Unauthorized().json(WebSessionResponse {
+                success: false,
+                session_id: None,
+                completion_status: None,
+                message_count: None,
+                created_at: None,
+                error: Some("No authorization token provided".to_string()),
+            });
+        }
+    };
+
+    // Validate the session
+    if state.db.validate_session(&token).ok().flatten().is_none() {
+        return HttpResponse::Unauthorized().json(WebSessionResponse {
+            success: false,
+            session_id: None,
+            completion_status: None,
+            message_count: None,
+            created_at: None,
+            error: Some("Invalid or expired session".to_string()),
+        });
+    }
+
+    // First get the current session
+    let chat_id = format!("web-{}", &token[..8.min(token.len())]);
+
+    let current_session = state.db.get_or_create_chat_session(
+        WEB_CHANNEL_TYPE,
+        WEB_CHANNEL_ID,
+        &chat_id,
+        SessionScope::Dm,
+        None,
+    );
+
+    match current_session {
+        Ok(session) => {
+            // Reset the session (marks old as inactive, creates new)
+            match state.db.reset_chat_session(session.id) {
+                Ok(new_session) => {
+                    log::info!("[CHAT] Created new web session {} (replaced {})", new_session.id, session.id);
+
+                    HttpResponse::Ok().json(WebSessionResponse {
+                        success: true,
+                        session_id: Some(new_session.id),
+                        completion_status: Some(new_session.completion_status.as_str().to_string()),
+                        message_count: Some(0),
+                        created_at: Some(new_session.created_at.to_rfc3339()),
+                        error: None,
+                    })
+                }
+                Err(e) => {
+                    log::error!("Failed to reset web session: {}", e);
+                    HttpResponse::InternalServerError().json(WebSessionResponse {
+                        success: false,
+                        session_id: None,
+                        completion_status: None,
+                        message_count: None,
+                        created_at: None,
+                        error: Some(format!("Failed to create new session: {}", e)),
+                    })
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to get current web session: {}", e);
+            HttpResponse::InternalServerError().json(WebSessionResponse {
+                success: false,
+                session_id: None,
+                completion_status: None,
+                message_count: None,
+                created_at: None,
+                error: Some(format!("Database error: {}", e)),
+            })
+        }
     }
 }

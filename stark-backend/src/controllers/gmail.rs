@@ -229,6 +229,7 @@ async fn dispatch_email(
         user_name: extract_name_from_email(&email.from),
         text: message_content,
         message_id: Some(email.message_id.clone()),
+        session_mode: None,
     };
 
     // Broadcast event

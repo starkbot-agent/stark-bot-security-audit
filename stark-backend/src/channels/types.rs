@@ -67,6 +67,9 @@ pub struct NormalizedMessage {
     pub text: String,
     /// Platform-specific message ID (for replies)
     pub message_id: Option<String>,
+    /// Session mode for cron jobs: "main" (shared with web) or "isolated" (separate session)
+    #[serde(default)]
+    pub session_mode: Option<String>,
 }
 
 /// Handle to a running channel listener

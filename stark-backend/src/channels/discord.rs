@@ -93,6 +93,7 @@ impl EventHandler for DiscordHandler {
             user_name: user_name.clone(),
             text,
             message_id: Some(msg.id.to_string()),
+            session_mode: None,
         };
 
         // Subscribe to events for real-time tool call forwarding

@@ -21,6 +21,17 @@ A cloud-deployable agentic AI assistant built with Rust and Actix. StarkBot is a
 
 AI Agents that directly interface with private keys always pose a serious risk. Use small amounts of cryptocurrency. Guard rails are built in to StarkBot but no guarantee is given that your funds will be safe. Significant testing has NOT been done with this tool - there is no assumption of safety or liability.
 
+
+
+
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ethereumdegen/stark-bot&type=date&legend=top-left)](https://www.star-history.com/#ethereumdegen/stark-bot&type=date&legend=top-left)
+
+
+
+
 ## Local Development
 
 ### Prerequisites

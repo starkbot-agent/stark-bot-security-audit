@@ -152,6 +152,9 @@ impl Scheduler {
             }),
         ));
 
+        // Track if this is main mode for later stop event
+        let is_main_mode = job.session_mode == "main";
+
         // Build the message to dispatch
         let message_text = job
             .message
@@ -159,15 +162,50 @@ impl Scheduler {
             .or_else(|| job.system_event.clone())
             .unwrap_or_else(|| format!("[Cron: {}]", job.name));
 
+        // Determine channel ID based on session_mode
+        // - "main" mode: use channel 0 (web channel) to share session with web UI
+        // - "isolated" mode (default): use unique negative channel ID to avoid collision
+        let cron_channel_id = if is_main_mode {
+            // Main mode intentionally uses web channel (0) for shared session
+            job.channel_id.unwrap_or(0)
+        } else {
+            // Isolated mode: use explicit channel_id if set, otherwise generate unique negative ID
+            job.channel_id.unwrap_or_else(|| {
+                // Generate unique negative channel ID based on job_id hash
+                // This avoids collision with real channel IDs (positive) and web channel (0)
+                -(job.job_id.chars().fold(1i64, |acc, c| {
+                    acc.wrapping_mul(31).wrapping_add(c as i64)
+                }).abs() % 1_000_000 + 1) // +1 ensures we never get 0
+            })
+        };
+
+        log::info!(
+            "Cron job '{}' using channel_id {} (session_mode: {})",
+            job.name,
+            cron_channel_id,
+            job.session_mode
+        );
+
+        // Broadcast cron execution started event for main mode (shows stop button in web UI)
+        if is_main_mode && cron_channel_id == 0 {
+            self.broadcaster.broadcast(GatewayEvent::cron_execution_started_on_channel(
+                0,
+                &job.job_id,
+                &job.name,
+                &job.session_mode,
+            ));
+        }
+
         // Create a normalized message for the dispatcher
         let normalized = NormalizedMessage {
-            channel_id: job.channel_id.unwrap_or(0),
+            channel_id: cron_channel_id,
             channel_type: "cron".to_string(),
             chat_id: format!("cron:{}", job.job_id),
             user_id: "system".to_string(),
             user_name: format!("Cron: {}", job.name),
             text: message_text,
             message_id: Some(format!("cron-run-{}", started_at.timestamp())),
+            session_mode: Some(job.session_mode.clone()),
         };
 
         // Execute the job
@@ -221,6 +259,15 @@ impl Scheduler {
                 "duration_ms": duration_ms,
             }),
         ));
+
+        // Broadcast cron execution stopped event for main mode (hides stop button in web UI)
+        if is_main_mode && cron_channel_id == 0 {
+            self.broadcaster.broadcast(GatewayEvent::cron_execution_stopped_on_channel(
+                0,
+                &job.job_id,
+                if success { "completed" } else { "failed" },
+            ));
+        }
 
         log::info!(
             "Cron job '{}' completed in {}ms (success: {})",
@@ -358,6 +405,7 @@ impl Scheduler {
         let message_text = "[HEARTBEAT] Periodic check - review any pending tasks, notifications, or scheduled items.".to_string();
 
         // Create a normalized message for the dispatcher
+        // Heartbeats use isolated sessions by default
         let normalized = NormalizedMessage {
             channel_id: config.channel_id.unwrap_or(0),
             channel_type: "heartbeat".to_string(),
@@ -366,6 +414,7 @@ impl Scheduler {
             user_name: "Heartbeat".to_string(),
             text: message_text,
             message_id: Some(format!("heartbeat-{}", now.timestamp())),
+            session_mode: Some("isolated".to_string()),
         };
 
         // Execute the heartbeat

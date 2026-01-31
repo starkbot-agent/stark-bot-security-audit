@@ -41,6 +41,58 @@ impl Default for SessionScope {
     }
 }
 
+/// Completion status of an agent session
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompletionStatus {
+    /// Session is active and can continue processing
+    Active,
+    /// Session completed successfully (task_fully_completed was called)
+    Complete,
+    /// Session was cancelled by user
+    Cancelled,
+    /// Session failed with an error
+    Failed,
+}
+
+impl CompletionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CompletionStatus::Active => "active",
+            CompletionStatus::Complete => "complete",
+            CompletionStatus::Cancelled => "cancelled",
+            CompletionStatus::Failed => "failed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "active" => Some(CompletionStatus::Active),
+            "complete" => Some(CompletionStatus::Complete),
+            "cancelled" | "canceled" => Some(CompletionStatus::Cancelled),
+            "failed" => Some(CompletionStatus::Failed),
+            _ => None,
+        }
+    }
+
+    /// Check if the session should stop processing
+    pub fn should_stop(&self) -> bool {
+        matches!(self, CompletionStatus::Complete | CompletionStatus::Cancelled | CompletionStatus::Failed)
+    }
+}
+
+impl Default for CompletionStatus {
+    fn default() -> Self {
+        CompletionStatus::Active
+    }
+}
+
+impl std::fmt::Display for CompletionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Reset policy determines when a session should be reset
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -103,13 +155,9 @@ pub struct ChatSession {
     pub max_context_tokens: i32,
     /// ID of the compaction memory entry if context has been compacted
     pub compaction_id: Option<i64>,
-    /// Completion status of the session ("active" or "complete")
-    #[serde(default = "default_completion_status")]
-    pub completion_status: String,
-}
-
-fn default_completion_status() -> String {
-    "active".to_string()
+    /// Completion status of the session
+    #[serde(default)]
+    pub completion_status: CompletionStatus,
 }
 
 /// Request to get or create a chat session
@@ -154,7 +202,10 @@ pub struct ChatSessionResponse {
     pub max_context_tokens: i32,
     pub compaction_id: Option<i64>,
     // Completion status
-    pub completion_status: String,
+    pub completion_status: CompletionStatus,
+    // Initial query (first user message) - for web sessions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_query: Option<String>,
 }
 
 impl From<ChatSession> for ChatSessionResponse {
@@ -179,6 +230,7 @@ impl From<ChatSession> for ChatSessionResponse {
             max_context_tokens: session.max_context_tokens,
             compaction_id: session.compaction_id,
             completion_status: session.completion_status,
+            initial_query: None,
         }
     }
 }

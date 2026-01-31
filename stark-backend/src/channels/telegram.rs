@@ -129,6 +129,7 @@ pub async fn start_telegram_listener(
                         user_name: user_name.clone(),
                         text: text.to_string(),
                         message_id: Some(msg.id.to_string()),
+                        session_mode: None,
                     };
 
                     // Subscribe to events for real-time tool call forwarding

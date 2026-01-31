@@ -15,7 +15,7 @@ import SubagentBadge from '@/components/chat/SubagentBadge';
 import { Subagent, SubagentStatus } from '@/lib/subagent-types';
 import { useGateway } from '@/hooks/useGateway';
 import { useWallet } from '@/hooks/useWallet';
-import { sendChatMessage, getAgentSettings, getSkills, getTools, confirmTransaction, cancelTransaction, stopExecution, listSubagents, getWebSession, getSessionTranscript } from '@/lib/api';
+import { sendChatMessage, getAgentSettings, getSkills, getTools, confirmTransaction, cancelTransaction, stopExecution, listSubagents, getActiveWebSession, getSessionTranscript, getExecutionStatus, createNewWebSession } from '@/lib/api';
 import { Command, COMMAND_DEFINITIONS, getAllCommands } from '@/lib/commands';
 import type { ChatMessage as ChatMessageType, MessageRole, SlashCommand, TrackedTransaction, TxPendingEvent, TxConfirmedEvent, PendingConfirmation, ConfirmationRequiredEvent } from '@/types';
 
@@ -80,6 +80,7 @@ export default function AgentChat() {
   );
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [activeExecutionId, setActiveExecutionId] = useState<string | null>(null);
   const [isStopping, setIsStopping] = useState(false);
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
@@ -89,6 +90,10 @@ export default function AgentChat() {
   const [trackedTxs, setTrackedTxs] = useState<TrackedTransaction[]>([]);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [subagents, setSubagents] = useState<Subagent[]>([]);
+  const [cronExecutionActive, setCronExecutionActive] = useState<{
+    job_id: string;
+    job_name: string;
+  } | null>(null);
   const [agentMode, setAgentMode] = useState<{ mode: string; label: string } | null>(() =>
     loadFromStorage<{ mode: string; label: string } | null>(STORAGE_KEY_MODE, null)
   );
@@ -170,15 +175,22 @@ export default function AgentChat() {
   );
 
   // Load chat history from database on mount
+  // The backend is the source of truth for the active session
   useEffect(() => {
     const loadHistory = async () => {
       try {
-        const webSession = await getWebSession();
+        // Get the active session from the backend (creates one if needed)
+        const webSession = await getActiveWebSession();
         if (webSession) {
-          setDbSessionId(webSession.id);
+          setDbSessionId(webSession.session_id);
+          // Update local sessionId to match backend
+          const backendSessionId = `session-${webSession.session_id}`;
+          setSessionId(backendSessionId);
+          localStorage.setItem(STORAGE_KEY_SESSION_ID, backendSessionId);
+
           // Only load if we have messages and haven't loaded yet
           if (webSession.message_count && webSession.message_count > 0 && !historyLoaded) {
-            const transcript = await getSessionTranscript(webSession.id);
+            const transcript = await getSessionTranscript(webSession.session_id);
             if (transcript.messages.length > 0) {
               // Convert DB messages to frontend format
               // Map tool_call and tool_result to 'tool' role for consistent styling
@@ -193,7 +205,7 @@ export default function AgentChat() {
                   role,
                   content: msg.content,
                   timestamp: new Date(msg.created_at),
-                  sessionId: sessionId,
+                  sessionId: backendSessionId,
                 };
               });
 
@@ -385,6 +397,33 @@ export default function AgentChat() {
     };
   }, [on, off]);
 
+  // Listen for cron execution events (for stop button visibility when cron runs in main mode)
+  useEffect(() => {
+    const handleCronStarted = (data: unknown) => {
+      if (!isWebChannelEvent(data)) return;
+      const event = data as { job_id: string; job_name: string; session_mode: string };
+      console.log('[Cron] Execution started on web channel:', event.job_id, event.job_name);
+      setCronExecutionActive({ job_id: event.job_id, job_name: event.job_name });
+      setIsLoading(true);
+    };
+
+    const handleCronStopped = (data: unknown) => {
+      if (!isWebChannelEvent(data)) return;
+      const event = data as { job_id: string; reason: string };
+      console.log('[Cron] Execution stopped on web channel:', event.job_id, event.reason);
+      setCronExecutionActive(null);
+      setIsLoading(false);
+    };
+
+    on('cron.execution_started_on_channel', handleCronStarted);
+    on('cron.execution_stopped_on_channel', handleCronStopped);
+
+    return () => {
+      off('cron.execution_started_on_channel', handleCronStarted);
+      off('cron.execution_stopped_on_channel', handleCronStopped);
+    };
+  }, [on, off]);
+
   // Listen for agent thinking/progress events (long AI calls)
   useEffect(() => {
     const handleThinking = (data: unknown) => {
@@ -450,14 +489,45 @@ export default function AgentChat() {
       ]);
     };
 
+    const handleAiRetrying = (data: unknown) => {
+      // Filter out events from other channels
+      if (!isWebChannelEvent(data)) return;
+
+      const event = data as {
+        attempt: number;
+        max_attempts: number;
+        wait_seconds: number;
+        error: string;
+        provider: string;
+        timestamp: string;
+      };
+      console.warn('[AI] Retrying:', event.provider, `attempt ${event.attempt}/${event.max_attempts}`);
+      // Replace any previous retry message with the new one
+      setMessages((prev) => {
+        const filtered = prev.filter((m) => !(m.role === 'system' && m.content.startsWith('🔄 API retry')));
+        return [
+          ...filtered,
+          {
+            id: crypto.randomUUID(),
+            role: 'system' as MessageRole,
+            content: `🔄 API retry ${event.attempt}/${event.max_attempts} (${event.provider}) - waiting ${event.wait_seconds}s... ${event.error}`,
+            timestamp: new Date(event.timestamp),
+            sessionId,
+          },
+        ];
+      });
+    };
+
     on('agent.thinking', handleThinking);
     on('agent.error', handleError);
     on('agent.warning', handleWarning);
+    on('ai.retrying', handleAiRetrying);
 
     return () => {
       off('agent.thinking', handleThinking);
       off('agent.error', handleError);
       off('agent.warning', handleWarning);
+      off('ai.retrying', handleAiRetrying);
     };
   }, [on, off, sessionId]);
 
@@ -467,7 +537,9 @@ export default function AgentChat() {
       // Filter out events from other channels (e.g., cron jobs)
       if (!isWebChannelEvent(data)) return;
 
-      console.log('[Execution] Started');
+      const event = data as { execution_id: string; channel_id: number; mode: string };
+      console.log('[Execution] Started:', event.execution_id);
+      setActiveExecutionId(event.execution_id);
       setIsLoading(true);
       setIsStopping(false); // Reset stopping state on new execution
     };
@@ -476,9 +548,18 @@ export default function AgentChat() {
       // Filter out events from other channels (e.g., cron jobs)
       if (!isWebChannelEvent(data)) return;
 
-      console.log('[Execution] Completed');
-      setIsLoading(false);
-      setIsStopping(false);
+      const event = data as { execution_id: string; channel_id: number };
+      console.log('[Execution] Completed:', event.execution_id);
+
+      // Only clear loading if this matches our tracked execution
+      setActiveExecutionId(prev => {
+        if (prev === event.execution_id || prev === null) {
+          setIsLoading(false);
+          setIsStopping(false);
+          return null;
+        }
+        return prev;
+      });
     };
 
     const handleExecutionStopped = (data: unknown) => {
@@ -486,13 +567,22 @@ export default function AgentChat() {
       if (!isWebChannelEvent(data)) return;
 
       const event = data as { channel_id: number; execution_id: string; reason: string };
-      console.log('[Execution] Stopped:', event.reason);
-      setIsLoading(false);
-      setIsStopping(false);
-      // Mark all running subagents as cancelled
-      setSubagents(prev => prev.map(s =>
-        s.status === SubagentStatus.Running ? { ...s, status: SubagentStatus.Cancelled } : s
-      ));
+      console.log('[Execution] Stopped:', event.execution_id, event.reason);
+
+      // Only clear loading if this matches our tracked execution
+      setActiveExecutionId(prev => {
+        if (prev === event.execution_id || prev === null) {
+          setIsLoading(false);
+          setIsStopping(false);
+          setCronExecutionActive(null);
+          // Mark all running subagents as cancelled
+          setSubagents(s => s.map(sub =>
+            sub.status === SubagentStatus.Running ? { ...sub, status: SubagentStatus.Cancelled } : sub
+          ));
+          return null;
+        }
+        return prev;
+      });
     };
 
     on('execution.started', handleExecutionStarted);
@@ -620,10 +710,35 @@ export default function AgentChat() {
     }
   }, [connected]);
 
+  // Check execution status on mount/reconnect for page refresh resilience
+  useEffect(() => {
+    const checkExecutionStatus = async () => {
+      try {
+        const status = await getExecutionStatus();
+        if (status.running && status.execution_id) {
+          console.log('[Execution] Restoring active execution:', status.execution_id);
+          setIsLoading(true);
+          setActiveExecutionId(status.execution_id);
+        }
+      } catch (e) {
+        console.error('Failed to check execution status:', e);
+      }
+    };
+
+    if (connected) {
+      checkExecutionStatus();
+    }
+  }, [connected]);
+
   // Debug: log subagents state changes
   useEffect(() => {
     console.log('[Subagent] State updated:', subagents);
   }, [subagents]);
+
+  // Debug: log execution state changes
+  useEffect(() => {
+    console.log('[Execution] State - loading:', isLoading, 'activeId:', activeExecutionId);
+  }, [isLoading, activeExecutionId]);
 
   const addMessage = useCallback((role: MessageRole, content: string) => {
     const message: ChatMessageType = {
@@ -661,56 +776,88 @@ export default function AgentChat() {
 
       addMessage('system', `**Session Status:**\n\n• Messages: ${messageCount}\n• Duration: ${mins}m ${secs}s\n• Provider: ${(settings as Record<string, unknown>).provider || 'anthropic'}\n• Est. tokens: ~${tokenEstimate}`);
     },
-    [Command.New]: () => {
-      const newSessionId = generateSessionId();
-      setSessionId(newSessionId);
-      localStorage.setItem(STORAGE_KEY_SESSION_ID, newSessionId);
-      conversationHistory.current = [];
-      localStorage.removeItem(STORAGE_KEY_HISTORY);
-      localStorage.removeItem(STORAGE_KEY_MODE);
-      localStorage.removeItem(STORAGE_KEY_SUBTYPE);
-      setAgentMode(null);
-      setAgentSubtype(null);
-      // Add welcome message with new session ID
-      const message: ChatMessageType = {
-        id: crypto.randomUUID(),
-        role: 'system' as MessageRole,
-        content: 'Conversation cleared. Starting fresh.',
-        timestamp: new Date(),
-        sessionId: newSessionId,
-      };
-      setMessages((prev) => [...prev, message]);
+    [Command.New]: async () => {
+      try {
+        // Create a new session on the backend
+        const newSession = await createNewWebSession();
+        if (newSession) {
+          const newSessionId = `session-${newSession.session_id}`;
+          setDbSessionId(newSession.session_id);
+          setSessionId(newSessionId);
+          localStorage.setItem(STORAGE_KEY_SESSION_ID, newSessionId);
+          console.log('[Session] Created new session:', newSession.session_id);
+
+          // Clear local state
+          conversationHistory.current = [];
+          localStorage.removeItem(STORAGE_KEY_HISTORY);
+          localStorage.removeItem(STORAGE_KEY_MODE);
+          localStorage.removeItem(STORAGE_KEY_SUBTYPE);
+          setAgentMode(null);
+          setAgentSubtype(null);
+
+          // Clear all messages and show welcome
+          setMessages([{
+            id: crypto.randomUUID(),
+            role: 'system' as MessageRole,
+            content: 'Conversation cleared. Starting fresh.',
+            timestamp: new Date(),
+            sessionId: newSessionId,
+          }]);
+        }
+      } catch (err) {
+        console.error('[Session] Failed to create new session:', err);
+        addMessage('error', 'Failed to create new session');
+      }
     },
-    [Command.Reset]: () => {
-      const newSessionId = generateSessionId();
-      setSessionId(newSessionId);
-      localStorage.setItem(STORAGE_KEY_SESSION_ID, newSessionId);
-      conversationHistory.current = [];
-      localStorage.removeItem(STORAGE_KEY_HISTORY);
-      localStorage.removeItem(STORAGE_KEY_MODE);
-      localStorage.removeItem(STORAGE_KEY_SUBTYPE);
-      setAgentMode(null);
-      setAgentSubtype(null);
-      // Add reset message with new session ID
-      const message: ChatMessageType = {
-        id: crypto.randomUUID(),
-        role: 'system' as MessageRole,
-        content: 'Conversation reset.',
-        timestamp: new Date(),
-        sessionId: newSessionId,
-      };
-      setMessages((prev) => [...prev, message]);
+    [Command.Reset]: async () => {
+      try {
+        const newSession = await createNewWebSession();
+        if (newSession) {
+          const newSessionId = `session-${newSession.session_id}`;
+          setDbSessionId(newSession.session_id);
+          setSessionId(newSessionId);
+          localStorage.setItem(STORAGE_KEY_SESSION_ID, newSessionId);
+
+          conversationHistory.current = [];
+          localStorage.removeItem(STORAGE_KEY_HISTORY);
+          localStorage.removeItem(STORAGE_KEY_MODE);
+          localStorage.removeItem(STORAGE_KEY_SUBTYPE);
+          setAgentMode(null);
+          setAgentSubtype(null);
+
+          setMessages([{
+            id: crypto.randomUUID(),
+            role: 'system' as MessageRole,
+            content: 'Conversation reset.',
+            timestamp: new Date(),
+            sessionId: newSessionId,
+          }]);
+        }
+      } catch (err) {
+        console.error('[Session] Failed to reset session:', err);
+        addMessage('error', 'Failed to reset session');
+      }
     },
-    [Command.Clear]: () => {
-      const newSessionId = generateSessionId();
-      setSessionId(newSessionId);
-      localStorage.setItem(STORAGE_KEY_SESSION_ID, newSessionId);
-      conversationHistory.current = [];
-      localStorage.removeItem(STORAGE_KEY_HISTORY);
-      localStorage.removeItem(STORAGE_KEY_MODE);
-      localStorage.removeItem(STORAGE_KEY_SUBTYPE);
-      setAgentMode(null);
-      setAgentSubtype(null);
+    [Command.Clear]: async () => {
+      try {
+        const newSession = await createNewWebSession();
+        if (newSession) {
+          const newSessionId = `session-${newSession.session_id}`;
+          setDbSessionId(newSession.session_id);
+          setSessionId(newSessionId);
+          localStorage.setItem(STORAGE_KEY_SESSION_ID, newSessionId);
+
+          conversationHistory.current = [];
+          localStorage.removeItem(STORAGE_KEY_HISTORY);
+          localStorage.removeItem(STORAGE_KEY_MODE);
+          localStorage.removeItem(STORAGE_KEY_SUBTYPE);
+          setAgentMode(null);
+          setAgentSubtype(null);
+          setMessages([]);
+        }
+      } catch (err) {
+        console.error('[Session] Failed to clear session:', err);
+      }
     },
     [Command.Skills]: async () => {
       try {
@@ -1116,8 +1263,8 @@ export default function AgentChat() {
             disabled={isStopping}
             onClick={async () => {
               const hasRunningSubagents = subagents.some(s => s.status === SubagentStatus.Running);
-              if (isLoading || hasRunningSubagents) {
-                // Stop ALL executions including subagents
+              if (isLoading || hasRunningSubagents || cronExecutionActive) {
+                // Stop ALL executions including subagents and cron jobs
                 setIsStopping(true);
                 try {
                   const result = await stopExecution();
@@ -1133,16 +1280,26 @@ export default function AgentChat() {
                   setIsStopping(false);
                 }
               } else {
-                // Clear the chat and start new session
-                const newSessionId = generateSessionId();
-                setSessionId(newSessionId);
-                localStorage.setItem(STORAGE_KEY_SESSION_ID, newSessionId);
-                conversationHistory.current = [];
-                localStorage.removeItem(STORAGE_KEY_HISTORY);
-                localStorage.removeItem(STORAGE_KEY_MODE);
-                localStorage.removeItem(STORAGE_KEY_SUBTYPE);
-                setAgentMode(null);
-                setAgentSubtype(null);
+                // Clear the chat and start new session on the backend
+                try {
+                  const newSession = await createNewWebSession();
+                  if (newSession) {
+                    const newSessionId = `session-${newSession.session_id}`;
+                    setDbSessionId(newSession.session_id);
+                    setSessionId(newSessionId);
+                    localStorage.setItem(STORAGE_KEY_SESSION_ID, newSessionId);
+
+                    conversationHistory.current = [];
+                    localStorage.removeItem(STORAGE_KEY_HISTORY);
+                    localStorage.removeItem(STORAGE_KEY_MODE);
+                    localStorage.removeItem(STORAGE_KEY_SUBTYPE);
+                    setAgentMode(null);
+                    setAgentSubtype(null);
+                    setMessages([]);
+                  }
+                } catch (err) {
+                  console.error('[Session] Failed to create new session:', err);
+                }
               }
             }}
           >
@@ -1151,10 +1308,10 @@ export default function AgentChat() {
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                 Stopping...
               </>
-            ) : (isLoading || subagents.some(s => s.status === SubagentStatus.Running)) ? (
+            ) : (isLoading || cronExecutionActive || subagents.some(s => s.status === SubagentStatus.Running)) ? (
               <>
                 <Square className="w-4 h-4 mr-2" />
-                Stop
+                {cronExecutionActive ? `Stop: ${cronExecutionActive.job_name}` : 'Stop'}
               </>
             ) : (
               <>

@@ -1,7 +1,7 @@
 use crate::ai::{
     multi_agent::{types::{AgentSubtype, AgentMode}, Orchestrator, ProcessResult as OrchestratorResult, SubAgentManager},
     AiClient, ArchetypeId, ArchetypeRegistry, AiResponse, Message, MessageRole, ModelArchetype,
-    ThinkingLevel, ToolCall, ToolHistoryEntry, ToolResponse,
+    ThinkingLevel, ToolHistoryEntry, ToolResponse,
 };
 use crate::channels::types::{DispatchResult, NormalizedMessage};
 use crate::config::MemoryConfig;
@@ -13,14 +13,23 @@ use crate::execution::ExecutionTracker;
 use crate::gateway::events::EventBroadcaster;
 use crate::gateway::protocol::GatewayEvent;
 use crate::models::session_message::MessageRole as DbMessageRole;
-use crate::models::{AgentSettings, MemoryType, SessionScope, DEFAULT_MAX_TOOL_ITERATIONS};
+use crate::models::{AgentSettings, CompletionStatus, MemoryType, SessionScope, DEFAULT_MAX_TOOL_ITERATIONS};
 use crate::tools::{ToolConfig, ToolContext, ToolDefinition, ToolExecution, ToolRegistry};
 use chrono::Utc;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::interval;
+
+/// Compiled regex patterns - avoid recompiling on every call
+static INLINE_THINKING_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^/(?:t|think|thinking):(\w+)\s+(.+)$").unwrap()
+});
+static THINKING_DIRECTIVE_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^/(?:t|think|thinking)(?::(\w+))?$").unwrap()
+});
 
 /// Fallback maximum tool iterations (used when db lookup fails)
 /// Actual value is configurable via bot settings
@@ -116,8 +125,6 @@ pub struct MessageDispatcher {
     archetype_registry: ArchetypeRegistry,
     /// Memory marker configurations
     memory_markers: Vec<MemoryMarkerConfig>,
-    /// Regex pattern for thinking directives
-    thinking_directive_pattern: Regex,
     /// Memory configuration for cross-session and other features
     memory_config: MemoryConfig,
     /// SubAgent manager for spawning background AI agents
@@ -186,7 +193,6 @@ impl MessageDispatcher {
             context_manager,
             archetype_registry: ArchetypeRegistry::new(),
             memory_markers: create_memory_markers(),
-            thinking_directive_pattern: Regex::new(r"(?i)^/(?:t|think|thinking)(?::(\w+))?$").unwrap(),
             memory_config,
             subagent_manager: Some(subagent_manager),
             skill_registry,
@@ -216,7 +222,6 @@ impl MessageDispatcher {
             context_manager,
             archetype_registry: ArchetypeRegistry::new(),
             memory_markers: create_memory_markers(),
-            thinking_directive_pattern: Regex::new(r"(?i)^/(?:t|think|thinking)(?::(\w+))?$").unwrap(),
             memory_config,
             subagent_manager: None, // No tools = no subagent support
             skill_registry: None,   // No skills without tools
@@ -280,11 +285,28 @@ impl MessageDispatcher {
             }
         };
 
-        // Determine session scope (group if chat_id != user_id, otherwise dm)
-        let scope = if message.chat_id != message.user_id {
-            SessionScope::Group
+        // Determine session scope based on session_mode (for cron) or chat context
+        let scope = if let Some(ref mode) = message.session_mode {
+            // Cron job with explicit session_mode
+            match mode.as_str() {
+                "isolated" => SessionScope::Cron,
+                "main" => {
+                    // Main mode uses existing session logic (shares with web chat)
+                    if message.chat_id != message.user_id {
+                        SessionScope::Group
+                    } else {
+                        SessionScope::Dm
+                    }
+                }
+                _ => SessionScope::Dm, // fallback
+            }
         } else {
-            SessionScope::Dm
+            // Original logic for non-cron messages
+            if message.chat_id != message.user_id {
+                SessionScope::Group
+            } else {
+                SessionScope::Dm
+            }
         };
 
         // Get or create chat session
@@ -359,7 +381,7 @@ impl MessageDispatcher {
             &settings,
             self.burner_wallet_private_key.as_deref(),
         ) {
-            Ok(c) => c,
+            Ok(c) => c.with_broadcaster(Arc::clone(&self.broadcaster), message.channel_id),
             Err(e) => {
                 let error = format!("Failed to create AI client: {}", e);
                 log::error!("{}", error);
@@ -1060,6 +1082,15 @@ impl MessageDispatcher {
                 break;
             }
 
+            // Check if session was marked as complete (defensive check against infinite loops)
+            // This catches cases where task_fully_completed was called but the loop didn't break
+            if let Ok(Some(status)) = self.db.get_session_completion_status(session_id) {
+                if status.should_stop() {
+                    log::info!("[ORCHESTRATED_LOOP] Session status is {:?}, stopping loop", status);
+                    break;
+                }
+            }
+
             if iterations > max_tool_iterations {
                 log::warn!("Orchestrated tool loop exceeded max iterations ({})", max_tool_iterations);
                 break;
@@ -1494,14 +1525,17 @@ impl MessageDispatcher {
                                 user_question_content = result.content.clone();
                                 log::info!("[ORCHESTRATED_LOOP] Tool requires user response, will break after processing");
                             }
-                            // Check if task_fully_completed was called - agent signals it's done with current task
+                            // Check if task_fully_completed was called - agent signals it's done
+                            // CRITICAL: This tool MUST stop the loop immediately to prevent infinite iteration
                             if metadata.get("task_fully_completed").and_then(|v| v.as_bool()).unwrap_or(false) {
                                 let summary = metadata.get("summary")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or(&result.content)
                                     .to_string();
 
-                                // Mark current task as completed and broadcast
+                                log::info!("[ORCHESTRATED_LOOP] task_fully_completed called, stopping loop");
+
+                                // Mark current task as completed and broadcast (if task queue exists)
                                 if let Some(completed_task_id) = orchestrator.complete_current_task() {
                                     log::info!("[ORCHESTRATED_LOOP] Task {} completed", completed_task_id);
                                     self.broadcast_task_status_change(
@@ -1512,37 +1546,18 @@ impl MessageDispatcher {
                                     );
                                 }
 
-                                // Check if all tasks are complete
-                                if orchestrator.all_tasks_complete() {
-                                    log::info!("[ORCHESTRATED_LOOP] All tasks complete, session done");
-                                    orchestrator_complete = true;
-                                    final_summary = summary;
+                                // ALWAYS stop the loop when task_fully_completed is called
+                                // The agent explicitly signaled it's done - respect that signal
+                                orchestrator_complete = true;
+                                final_summary = summary.clone();
 
-                                    // Mark session as complete in database
-                                    if let Err(e) = self.db.update_session_completion_status(session_id, "complete") {
-                                        log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
-                                    }
-
-                                    // Broadcast session complete event
-                                    self.broadcast_session_complete(original_message.channel_id, session_id);
-                                } else {
-                                    // Pop next task and broadcast
-                                    if let Some(next_task) = orchestrator.pop_next_task() {
-                                        log::info!(
-                                            "[ORCHESTRATED_LOOP] Starting next task: {} - {}",
-                                            next_task.id,
-                                            next_task.description
-                                        );
-                                        self.broadcast_task_status_change(
-                                            original_message.channel_id,
-                                            next_task.id,
-                                            "in_progress",
-                                            &next_task.description,
-                                        );
-                                        // Broadcast updated queue
-                                        self.broadcast_task_queue_update(original_message.channel_id, orchestrator);
-                                    }
+                                // Mark session as complete in database
+                                if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Complete) {
+                                    log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
                                 }
+
+                                // Broadcast session complete event
+                                self.broadcast_session_complete(original_message.channel_id, session_id);
                             }
                         }
 
@@ -1717,6 +1732,14 @@ impl MessageDispatcher {
             if self.execution_tracker.is_cancelled(original_message.channel_id) {
                 log::info!("[TEXT_ORCHESTRATED] Execution cancelled by user, stopping loop");
                 break;
+            }
+
+            // Check if session was marked as complete (defensive check against infinite loops)
+            if let Ok(Some(status)) = self.db.get_session_completion_status(session_id) {
+                if status.should_stop() {
+                    log::info!("[TEXT_ORCHESTRATED] Session status is {:?}, stopping loop", status);
+                    break;
+                }
             }
 
             if iterations > max_tool_iterations {
@@ -1981,6 +2004,22 @@ impl MessageDispatcher {
                                     &result.content,
                                 ));
 
+                                // Execute AfterToolCall hooks (for auto-memory, etc.)
+                                if let Some(hook_manager) = &self.hook_manager {
+                                    use crate::hooks::{HookContext, HookEvent, HookResult};
+                                    let mut hook_context = HookContext::new(HookEvent::AfterToolCall)
+                                        .with_channel(original_message.channel_id, Some(session_id))
+                                        .with_tool(tool_call.tool_name.clone(), tool_call.tool_params.clone())
+                                        .with_tool_result(serde_json::json!({
+                                            "success": result.success,
+                                            "content": result.content,
+                                        }));
+                                    let hook_result = hook_manager.execute(HookEvent::AfterToolCall, &mut hook_context).await;
+                                    if let HookResult::Error(e) = hook_result {
+                                        log::warn!("Hook execution failed for tool '{}': {}", tool_call.tool_name, e);
+                                    }
+                                }
+
                                 // Save tool result to session
                                 let tool_result_msg = format!(
                                     "**{}:** {}\n{}",
@@ -2219,225 +2258,6 @@ impl MessageDispatcher {
         }
     }
 
-    /// Execute a list of tool calls and return responses (for native tool calling)
-    async fn execute_tool_calls(
-        &self,
-        tool_calls: &[ToolCall],
-        tool_config: &ToolConfig,
-        tool_context: &ToolContext,
-        channel_id: i64,
-        session_id: i64,
-        _user_id: &str,
-    ) -> Vec<ToolResponse> {
-        let mut responses = Vec::new();
-
-        // Get the current execution ID for tracking
-        let execution_id = self.execution_tracker.get_execution_id(channel_id);
-
-        // Emit a "preparing tools" task if we have multiple tool calls
-        if tool_calls.len() > 1 {
-            if let Some(ref exec_id) = execution_id {
-                let prep_task = self.execution_tracker.start_task(
-                    channel_id,
-                    exec_id,
-                    Some(exec_id),
-                    crate::models::TaskType::Loading,
-                    format!("Preparing {} tool calls", tool_calls.len()),
-                    Some("Loading tool handlers..."),
-                );
-                self.execution_tracker.complete_task(&prep_task);
-            }
-        }
-
-        for (idx, call) in tool_calls.iter().enumerate() {
-            // Check if execution was cancelled before each tool
-            if self.execution_tracker.is_cancelled(channel_id) {
-                log::info!("[TOOL_EXEC] Execution cancelled, skipping remaining {} tools", tool_calls.len() - idx);
-                // Return cancellation response for remaining tools
-                for remaining_call in tool_calls.iter().skip(idx) {
-                    responses.push(ToolResponse {
-                        tool_call_id: remaining_call.id.clone(),
-                        content: "Execution cancelled by user".to_string(),
-                        is_error: true,
-                    });
-                }
-                break;
-            }
-
-            let start = std::time::Instant::now();
-
-            // Start tracking this tool execution with context from arguments
-            let task_id = if let Some(ref exec_id) = execution_id {
-                Some(self.execution_tracker.start_tool(channel_id, exec_id, &call.name, &call.arguments))
-            } else {
-                None
-            };
-
-            // Emit tool execution event (legacy event for backwards compatibility)
-            self.broadcaster.broadcast(GatewayEvent::tool_execution(
-                channel_id,
-                &call.name,
-                &call.arguments,
-            ));
-
-            // Add a validation sub-task for tools with complex parameters
-            let has_complex_params = call.arguments.as_object()
-                .map(|obj| obj.len() > 2)
-                .unwrap_or(false);
-            if has_complex_params {
-                if let Some(ref exec_id) = execution_id {
-                    let validate_task = self.execution_tracker.start_task(
-                        channel_id,
-                        exec_id,
-                        task_id.as_deref(),
-                        crate::models::TaskType::Validation,
-                        format!("Validating {} parameters", call.name),
-                        Some("Checking input parameters..."),
-                    );
-                    self.execution_tracker.complete_task(&validate_task);
-                }
-            }
-
-            // Execute the tool (handle special "use_skill" pseudo-tool)
-            let result = if call.name == "use_skill" {
-                self.execute_skill_tool(&call.arguments, Some(session_id)).await
-            } else {
-                self.tool_registry
-                    .execute(&call.name, call.arguments.clone(), tool_context, Some(tool_config))
-                    .await
-            };
-
-            // Handle exponential backoff for retryable errors
-            let result = if let Some(retry_secs) = result.retry_after_secs {
-                log::info!(
-                    "[TOOL_RETRY] Tool '{}' returned retryable error, pausing for {}s before continuing",
-                    call.name,
-                    retry_secs
-                );
-
-                // Emit a waiting event so the UI can show the delay
-                self.broadcaster.broadcast(GatewayEvent::tool_waiting(
-                    channel_id,
-                    &call.name,
-                    retry_secs,
-                ));
-
-                // Pause for the backoff duration, checking for cancellation every second
-                let mut remaining_secs = retry_secs;
-                let mut cancelled = false;
-                while remaining_secs > 0 {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    remaining_secs -= 1;
-                    if self.execution_tracker.is_cancelled(channel_id) {
-                        log::info!("[TOOL_RETRY] Execution cancelled during backoff wait");
-                        cancelled = true;
-                        break;
-                    }
-                }
-
-                if cancelled {
-                    crate::tools::ToolResult::error("Execution cancelled by user".to_string())
-                } else {
-                    // Return a modified result that instructs the agent to retry
-                    crate::tools::ToolResult::error(format!(
-                        "{}\n\n🔄 The system paused for {} seconds. Please retry the same tool call now - the temporary error may have resolved.",
-                        result.error.unwrap_or_else(|| "Unknown error".to_string()),
-                        retry_secs
-                    ))
-                }
-            } else {
-                result
-            };
-
-            let duration_ms = start.elapsed().as_millis() as i64;
-
-            // Complete the tool tracking
-            if let Some(ref tid) = task_id {
-                if result.success {
-                    self.execution_tracker.complete_task(tid);
-                } else {
-                    self.execution_tracker.complete_task_with_error(tid, &result.content);
-                }
-            }
-
-            // Add a result processing task for large results
-            let result_size = result.content.len();
-            if result_size > 500 && result.success {
-                if let Some(ref exec_id) = execution_id {
-                    let size_desc = if result_size > 10000 {
-                        format!("{:.1}KB", result_size as f64 / 1024.0)
-                    } else {
-                        format!("{} chars", result_size)
-                    };
-                    let process_task = self.execution_tracker.start_task(
-                        channel_id,
-                        exec_id,
-                        Some(exec_id),
-                        crate::models::TaskType::Analyzing,
-                        format!("Processing {} result ({})", call.name, size_desc),
-                        Some("Analyzing output..."),
-                    );
-                    self.execution_tracker.complete_task(&process_task);
-                }
-            }
-
-            // Emit tool result event with content for UI display
-            self.broadcaster.broadcast(GatewayEvent::tool_result(
-                channel_id,
-                &call.name,
-                result.success,
-                duration_ms,
-                &result.content,
-            ));
-
-            // Log the execution
-            if let Err(e) = self.db.log_tool_execution(&ToolExecution {
-                id: None,
-                channel_id,
-                tool_name: call.name.clone(),
-                parameters: call.arguments.clone(),
-                success: result.success,
-                result: Some(result.content.clone()),
-                duration_ms: Some(duration_ms),
-                executed_at: Utc::now().to_rfc3339(),
-            }) {
-                log::error!("Failed to log tool execution: {}", e);
-            }
-
-            log::info!(
-                "Tool '{}' executed in {}ms, success: {}",
-                call.name,
-                duration_ms,
-                result.success
-            );
-
-            // Execute AfterToolCall hooks
-            if let Some(hook_manager) = &self.hook_manager {
-                use crate::hooks::{HookContext, HookEvent, HookResult};
-                let mut hook_context = HookContext::new(HookEvent::AfterToolCall)
-                    .with_channel(channel_id, Some(session_id))
-                    .with_tool(call.name.clone(), call.arguments.clone())
-                    .with_tool_result(serde_json::json!({
-                        "success": result.success,
-                        "content": result.content,
-                    }));
-                let hook_result = hook_manager.execute(HookEvent::AfterToolCall, &mut hook_context).await;
-                if let HookResult::Error(e) = hook_result {
-                    log::warn!("Hook execution failed for tool '{}': {}", call.name, e);
-                }
-            }
-
-            // Create tool response
-            responses.push(if result.success {
-                ToolResponse::success(call.id.clone(), result.content)
-            } else {
-                ToolResponse::error(call.id.clone(), result.content)
-            });
-        }
-
-        responses
-    }
-
     /// Load SOUL.md content if it exists
     fn load_soul() -> Option<String> {
         // Try multiple locations for SOUL.md
@@ -2611,7 +2431,7 @@ impl MessageDispatcher {
         let text = message.text.trim();
 
         // Check if this is a standalone thinking directive
-        if let Some(captures) = self.thinking_directive_pattern.captures(text) {
+        if let Some(captures) = THINKING_DIRECTIVE_PATTERN.captures(text) {
             let level_str = captures.get(1).map(|m| m.as_str()).unwrap_or("low");
 
             if let Some(level) = ThinkingLevel::from_str(level_str) {
@@ -2667,10 +2487,8 @@ impl MessageDispatcher {
     fn parse_inline_thinking(&self, text: &str) -> (Option<ThinkingLevel>, Option<String>) {
         let text = text.trim();
 
-        // Pattern: /think:level followed by the actual message
-        let inline_pattern = Regex::new(r"(?i)^/(?:t|think|thinking):(\w+)\s+(.+)$").unwrap();
-
-        if let Some(captures) = inline_pattern.captures(text) {
+        // Use static pattern to avoid recompiling on every call
+        if let Some(captures) = INLINE_THINKING_PATTERN.captures(text) {
             let level_str = captures.get(1).map(|m| m.as_str()).unwrap_or("");
             let clean_text = captures.get(2).map(|m| m.as_str().to_string());
 

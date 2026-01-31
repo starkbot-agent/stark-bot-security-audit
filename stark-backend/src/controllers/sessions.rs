@@ -2,8 +2,8 @@ use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use serde::Deserialize;
 
 use crate::models::{
-    ChatSessionResponse, GetOrCreateSessionRequest, SessionScope, SessionTranscriptResponse,
-    UpdateResetPolicyRequest,
+    ChatSessionResponse, CompletionStatus, GetOrCreateSessionRequest, SessionScope,
+    SessionTranscriptResponse, UpdateResetPolicyRequest,
 };
 use crate::AppState;
 
@@ -55,9 +55,22 @@ async fn list_sessions(
             let responses: Vec<ChatSessionResponse> = sessions
                 .into_iter()
                 .map(|s| {
+                    let is_web = s.channel_type == "web";
+                    let session_id = s.id;
                     let mut response: ChatSessionResponse = s.into();
-                    if let Ok(count) = data.db.count_session_messages(response.id) {
+                    if let Ok(count) = data.db.count_session_messages(session_id) {
                         response.message_count = Some(count);
+                    }
+                    // For web sessions, get the initial query (first user message)
+                    if is_web {
+                        if let Ok(Some(first_msg)) = data.db.get_first_user_message(session_id) {
+                            // Truncate to 100 chars for the list view
+                            response.initial_query = Some(if first_msg.len() > 100 {
+                                format!("{}...", &first_msg[..100])
+                            } else {
+                                first_msg
+                            });
+                        }
                     }
                     response
                 })
@@ -262,6 +275,147 @@ async fn delete_session(
     }
 }
 
+/// Stop a session - cancels execution and marks as cancelled
+async fn stop_session(
+    data: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+) -> impl Responder {
+    if let Err(resp) = validate_session_from_request(&data, &req) {
+        return resp;
+    }
+    let session_id = path.into_inner();
+
+    // Get the session first
+    let session = match data.db.get_chat_session(session_id) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "error": "Session not found"
+            }));
+        }
+        Err(e) => {
+            log::error!("Failed to get session for stop: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Database error: {}", e)
+            }));
+        }
+    };
+
+    // Cancel any running executions for this session
+    let channel_id = session.channel_id;
+    let cancelled_agents = if let Some(subagent_manager) = data.dispatcher.subagent_manager() {
+        let count = subagent_manager.cancel_all_for_channel(channel_id);
+        if count > 0 {
+            log::info!(
+                "Stop session: Cancelled {} running agent(s) for channel {} (session {})",
+                count,
+                channel_id,
+                session_id
+            );
+        }
+        count
+    } else {
+        0
+    };
+
+    // Also cancel execution tracker
+    data.execution_tracker.cancel_execution(channel_id);
+    data.execution_tracker.cancel_all_sessions_for_channel(channel_id);
+
+    // Update completion status to cancelled
+    if let Err(e) = data.db.update_session_completion_status(session_id, CompletionStatus::Cancelled) {
+        log::error!("Failed to update session status: {}", e);
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Database error: {}", e)
+        }));
+    }
+
+    // Return updated session
+    match data.db.get_chat_session(session_id) {
+        Ok(Some(session)) => {
+            let mut response: ChatSessionResponse = session.into();
+            if let Ok(count) = data.db.count_session_messages(response.id) {
+                response.message_count = Some(count);
+            }
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "session": response,
+                "cancelled_agents": cancelled_agents
+            }))
+        }
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "Session not found"
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Database error: {}", e)
+        })),
+    }
+}
+
+/// Resume a session - marks as active so it can continue processing
+async fn resume_session(
+    data: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<i64>,
+) -> impl Responder {
+    if let Err(resp) = validate_session_from_request(&data, &req) {
+        return resp;
+    }
+    let session_id = path.into_inner();
+
+    // Get the session first to validate it exists
+    let session = match data.db.get_chat_session(session_id) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "error": "Session not found"
+            }));
+        }
+        Err(e) => {
+            log::error!("Failed to get session for resume: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Database error: {}", e)
+            }));
+        }
+    };
+
+    // Don't allow resuming completed sessions
+    if session.completion_status == CompletionStatus::Complete {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Cannot resume a completed session"
+        }));
+    }
+
+    // Update completion status to active
+    if let Err(e) = data.db.update_session_completion_status(session_id, CompletionStatus::Active) {
+        log::error!("Failed to update session status: {}", e);
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Database error: {}", e)
+        }));
+    }
+
+    // Return updated session
+    match data.db.get_chat_session(session_id) {
+        Ok(Some(session)) => {
+            let mut response: ChatSessionResponse = session.into();
+            if let Ok(count) = data.db.count_session_messages(response.id) {
+                response.message_count = Some(count);
+            }
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "session": response
+            }))
+        }
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "Session not found"
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Database error: {}", e)
+        })),
+    }
+}
+
 /// Get session transcript (message history)
 #[derive(Deserialize)]
 struct TranscriptQuery {
@@ -311,6 +465,8 @@ pub fn config(cfg: &mut web::ServiceConfig) {
             .route("/{id}", web::get().to(get_session))
             .route("/{id}", web::delete().to(delete_session))
             .route("/{id}/reset", web::post().to(reset_session))
+            .route("/{id}/stop", web::post().to(stop_session))
+            .route("/{id}/resume", web::post().to(resume_session))
             .route("/{id}/policy", web::put().to(update_reset_policy))
             .route("/{id}/transcript", web::get().to(get_transcript)),
     );

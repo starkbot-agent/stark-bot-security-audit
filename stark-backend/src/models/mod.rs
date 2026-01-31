@@ -15,8 +15,8 @@ pub use bot_settings::{BotSettings, UpdateBotSettingsRequest, DEFAULT_MAX_TOOL_I
 pub use api_key::{ApiKey, ApiKeyResponse};
 pub use channel::{Channel, ChannelResponse, ChannelType, CreateChannelRequest, UpdateChannelRequest};
 pub use chat_session::{
-    ChatSession, ChatSessionResponse, GetOrCreateSessionRequest, ResetPolicy, SessionScope,
-    UpdateResetPolicyRequest,
+    ChatSession, ChatSessionResponse, CompletionStatus, GetOrCreateSessionRequest, ResetPolicy,
+    SessionScope, UpdateResetPolicyRequest,
 };
 pub use identity::{
     GetOrCreateIdentityRequest, IdentityLink, IdentityResponse, LinkIdentityRequest,

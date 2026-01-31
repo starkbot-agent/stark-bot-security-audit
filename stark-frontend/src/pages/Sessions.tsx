@@ -1,21 +1,43 @@
 import { useState, useEffect } from 'react';
-import { Calendar, Trash2, MessageSquare, Download, ChevronLeft, User, Bot, Wrench, CheckCircle } from 'lucide-react';
+import { Calendar, Trash2, MessageSquare, Download, ChevronLeft, User, Bot, Wrench, CheckCircle, XCircle, AlertCircle, Play, Pause } from 'lucide-react';
 import Card, { CardContent } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
-import { getSessions, deleteSession, getSessionTranscript, SessionMessage } from '@/lib/api';
+import { getSessions, deleteSession, getSessionTranscript, SessionMessage, getCronJobs, CronJobInfo, stopSession, resumeSession } from '@/lib/api';
+
+type CompletionStatus = 'active' | 'complete' | 'cancelled' | 'failed';
 
 interface Session {
   id: number;
   channel_type: string;
   channel_id: number;
+  platform_chat_id?: string;
   created_at: string;
   updated_at: string;
   message_count?: number;
-  completion_status?: 'active' | 'complete';
+  completion_status?: string;
+  initial_query?: string;
 }
+
+function isValidStatus(status: string | undefined): status is CompletionStatus {
+  return status !== undefined && ['active', 'complete', 'cancelled', 'failed'].includes(status);
+}
+
+// Extract cron job_id from platform_chat_id (format: "cron:job_id")
+function getCronJobId(platformChatId?: string): string | null {
+  if (!platformChatId || !platformChatId.startsWith('cron:')) return null;
+  return platformChatId.slice(5); // Remove "cron:" prefix
+}
+
+const statusConfig: Record<CompletionStatus, { icon: typeof CheckCircle; bg: string; text: string; label: string }> = {
+  active: { icon: Play, bg: 'bg-blue-500/20', text: 'text-blue-400', label: 'Active' },
+  complete: { icon: CheckCircle, bg: 'bg-green-500/20', text: 'text-green-400', label: 'Complete' },
+  cancelled: { icon: XCircle, bg: 'bg-yellow-500/20', text: 'text-yellow-400', label: 'Cancelled' },
+  failed: { icon: AlertCircle, bg: 'bg-red-500/20', text: 'text-red-400', label: 'Failed' },
+};
 
 export default function Sessions() {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [cronJobs, setCronJobs] = useState<Map<string, CronJobInfo>>(new Map());
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -29,12 +51,21 @@ export default function Sessions() {
 
   const loadSessions = async () => {
     try {
-      const data = await getSessions();
+      const [data, jobs] = await Promise.all([
+        getSessions(),
+        getCronJobs().catch(() => []), // Don't fail if cron jobs can't be fetched
+      ]);
       // Sort by updated_at desc and limit to 100
       const sorted = data
         .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
         .slice(0, 100);
       setSessions(sorted);
+      // Build a map of cron job_id (UUID) -> info for quick lookup
+      // This uses the job_id (UUID string), not the database id, because
+      // sessions reference cron jobs via platform_chat_id like "cron:job_id"
+      const jobMap = new Map<string, CronJobInfo>();
+      jobs.forEach(job => jobMap.set(job.job_id, job));
+      setCronJobs(jobMap);
     } catch (err) {
       setError('Failed to load sessions');
     } finally {
@@ -88,6 +119,53 @@ export default function Sessions() {
       setTimeout(() => setSuccessMessage(null), 5000);
     } catch (err) {
       setError('Failed to delete session');
+    }
+  };
+
+  const handleToggleStatus = async (session: Session, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent triggering the card click
+
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const isActive = session.completion_status === 'active';
+
+      if (isActive) {
+        // Stop the session
+        const result = await stopSession(session.id);
+        if (result.success) {
+          setSessions((prev) => prev.map((s) =>
+            s.id === session.id
+              ? { ...s, completion_status: 'cancelled' }
+              : s
+          ));
+          const agentMsg = result.cancelled_agents && result.cancelled_agents > 0
+            ? ` Cancelled ${result.cancelled_agents} running agent(s).`
+            : '';
+          setSuccessMessage(`Session stopped.${agentMsg}`);
+        } else {
+          setError(result.error || 'Failed to stop session');
+        }
+      } else {
+        // Resume the session (for cancelled or failed)
+        const result = await resumeSession(session.id);
+        if (result.success) {
+          setSessions((prev) => prev.map((s) =>
+            s.id === session.id
+              ? { ...s, completion_status: 'active' }
+              : s
+          ));
+          setSuccessMessage('Session resumed.');
+        } else {
+          setError(result.error || 'Failed to resume session');
+        }
+      }
+
+      // Auto-hide success message after 3 seconds
+      setTimeout(() => setSuccessMessage(null), 3000);
+    } catch (err) {
+      setError('Failed to update session status');
     }
   };
 
@@ -180,6 +258,18 @@ export default function Sessions() {
               <h1 className="text-2xl font-bold text-white mb-1">
                 {selectedSession.channel_type} - Session {selectedSession.id}
               </h1>
+              {selectedSession.channel_type === 'cron' && (() => {
+                const jobId = getCronJobId(selectedSession.platform_chat_id);
+                const cronJob = jobId ? cronJobs.get(jobId) : null;
+                return cronJob && (
+                  <p className="text-slate-300 text-sm mb-1">
+                    {cronJob.name}
+                    {cronJob.description && (
+                      <span className="text-slate-500"> - {cronJob.description}</span>
+                    )}
+                  </p>
+                );
+              })()}
               <p className="text-slate-400 text-sm">
                 {formatDate(selectedSession.created_at)} - {messages.length} messages
               </p>
@@ -317,13 +407,34 @@ export default function Sessions() {
                         <span className="text-xs font-mono px-2 py-0.5 bg-slate-700/50 text-slate-300 rounded">
                           {session.id.toString(16).padStart(8, '0')}
                         </span>
-                        {session.completion_status === 'complete' && (
-                          <span className="text-xs px-2 py-0.5 bg-green-500/20 text-green-400 rounded-full flex items-center gap-1">
-                            <CheckCircle className="w-3 h-3" />
-                            Complete
-                          </span>
-                        )}
+                        {isValidStatus(session.completion_status) && (() => {
+                          const config = statusConfig[session.completion_status];
+                          const StatusIcon = config.icon;
+                          return (
+                            <span className={`text-xs px-2 py-0.5 ${config.bg} ${config.text} rounded-full flex items-center gap-1`}>
+                              <StatusIcon className="w-3 h-3" />
+                              {config.label}
+                            </span>
+                          );
+                        })()}
                       </div>
+                      {session.channel_type === 'cron' && (() => {
+                        const jobId = getCronJobId(session.platform_chat_id);
+                        const cronJob = jobId ? cronJobs.get(jobId) : null;
+                        return cronJob && (
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {cronJob.name}
+                            {cronJob.description && (
+                              <span className="text-slate-600"> - {cronJob.description}</span>
+                            )}
+                          </p>
+                        );
+                      })()}
+                      {session.channel_type === 'web' && session.initial_query && (
+                        <p className="text-xs text-slate-500 mt-0.5 truncate max-w-md">
+                          {session.initial_query}
+                        </p>
+                      )}
                       <div className="flex items-center gap-4 mt-1 text-sm text-slate-400">
                         <span>Last active: {formatShortDate(session.updated_at)}</span>
                         {session.message_count !== undefined && (
@@ -336,6 +447,28 @@ export default function Sessions() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {/* Play/Pause button - don't show for completed sessions */}
+                    {session.completion_status !== 'complete' && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => handleToggleStatus(session, e)}
+                        className={session.completion_status === 'active'
+                          ? "text-yellow-400 hover:text-yellow-300 hover:bg-yellow-500/20"
+                          : "text-green-400 hover:text-green-300 hover:bg-green-500/20"
+                        }
+                        title={session.completion_status === 'active'
+                          ? "Stop session and cancel running agents"
+                          : "Resume session"
+                        }
+                      >
+                        {session.completion_status === 'active' ? (
+                          <Pause className="w-4 h-4" />
+                        ) : (
+                          <Play className="w-4 h-4" />
+                        )}
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"

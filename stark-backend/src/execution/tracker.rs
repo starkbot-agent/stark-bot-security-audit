@@ -20,6 +20,12 @@ pub struct ExecutionTracker {
     cancelled_channels: DashMap<i64, bool>,
     /// Cancellation tokens for immediate async interruption per channel
     cancellation_tokens: DashMap<i64, CancellationToken>,
+    /// Maps session_id to current execution_id (for cron job isolation)
+    session_executions: DashMap<i64, String>,
+    /// Sessions that have been cancelled
+    cancelled_sessions: DashMap<i64, bool>,
+    /// Cancellation tokens per session
+    session_cancellation_tokens: DashMap<i64, CancellationToken>,
 }
 
 impl ExecutionTracker {
@@ -31,6 +37,9 @@ impl ExecutionTracker {
             channel_executions: DashMap::new(),
             cancelled_channels: DashMap::new(),
             cancellation_tokens: DashMap::new(),
+            session_executions: DashMap::new(),
+            cancelled_sessions: DashMap::new(),
+            session_cancellation_tokens: DashMap::new(),
         }
     }
 
@@ -80,6 +89,108 @@ impl ExecutionTracker {
         self.cancelled_channels.remove(&channel_id);
         // Replace with a fresh token for the new execution
         self.cancellation_tokens.insert(channel_id, CancellationToken::new());
+    }
+
+    // =====================================================
+    // Session-based execution tracking (for cron job isolation)
+    // =====================================================
+
+    /// Get a cancellation token for a session
+    pub fn get_session_cancellation_token(&self, session_id: i64) -> CancellationToken {
+        self.session_cancellation_tokens
+            .entry(session_id)
+            .or_insert_with(CancellationToken::new)
+            .clone()
+    }
+
+    /// Start a new execution for a session (used by cron jobs)
+    /// Returns the execution ID
+    pub fn start_execution_for_session(
+        &self,
+        session_id: i64,
+        channel_id: i64,
+        mode: &str,
+        user_message: Option<&str>,
+    ) -> String {
+        // Clear any previous session cancellation
+        self.clear_session_cancellation(session_id);
+
+        // Create the execution using the normal method
+        let execution_id = self.start_execution(channel_id, mode, user_message);
+
+        // Also track by session_id for session-based cancellation
+        self.session_executions.insert(session_id, execution_id.clone());
+
+        execution_id
+    }
+
+    /// Complete an execution for a session
+    pub fn complete_execution_for_session(&self, session_id: i64) {
+        if let Some((_, execution_id)) = self.session_executions.remove(&session_id) {
+            log::debug!("[EXECUTION_TRACKER] Completing session {} execution {}", session_id, execution_id);
+        }
+        // Also clear session cancellation state
+        self.cancelled_sessions.remove(&session_id);
+    }
+
+    /// Cancel any ongoing execution for a session
+    pub fn cancel_execution_for_session(&self, session_id: i64) {
+        log::info!("[EXECUTION_TRACKER] Cancelling execution for session {}", session_id);
+
+        // Cancel via token
+        if let Some(token) = self.session_cancellation_tokens.get(&session_id) {
+            token.cancel();
+        }
+
+        // Set cancellation flag
+        self.cancelled_sessions.insert(session_id, true);
+
+        // If we have an execution_id, emit stopped event
+        if let Some(execution_id) = self.session_executions.get(&session_id).map(|v| v.clone()) {
+            // Get the channel_id from the execution task if available
+            if let Some(task) = self.tasks.get(&execution_id) {
+                self.broadcaster.broadcast(GatewayEvent::execution_stopped(
+                    task.channel_id,
+                    &execution_id,
+                    "Session cancelled",
+                ));
+            }
+        }
+
+        self.complete_execution_for_session(session_id);
+    }
+
+    /// Check if a session's execution has been cancelled
+    pub fn is_session_cancelled(&self, session_id: i64) -> bool {
+        self.cancelled_sessions.get(&session_id).map(|v| *v).unwrap_or(false)
+    }
+
+    /// Clear the cancellation flag for a session
+    pub fn clear_session_cancellation(&self, session_id: i64) {
+        self.cancelled_sessions.remove(&session_id);
+        self.session_cancellation_tokens.insert(session_id, CancellationToken::new());
+    }
+
+    /// Cancel all sessions associated with a channel
+    /// This is used when the user clicks Stop on the web channel
+    pub fn cancel_all_sessions_for_channel(&self, channel_id: i64) {
+        // Find all session executions that belong to tasks on this channel
+        let sessions_to_cancel: Vec<i64> = self.session_executions
+            .iter()
+            .filter_map(|entry| {
+                let execution_id = entry.value();
+                if let Some(task) = self.tasks.get(execution_id) {
+                    if task.channel_id == channel_id {
+                        return Some(*entry.key());
+                    }
+                }
+                None
+            })
+            .collect();
+
+        for session_id in sessions_to_cancel {
+            self.cancel_execution_for_session(session_id);
+        }
     }
 
     /// Start a new execution for a channel

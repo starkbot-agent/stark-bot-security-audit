@@ -22,6 +22,8 @@ pub enum ApiKeyId {
     SlackBotToken,
     #[strum(serialize = "MOLTBOOK_TOKEN")]
     MoltbookToken,
+    #[strum(serialize = "FOURCLAW_TOKEN")]
+    FourclawToken,
 }
 
 impl ApiKeyId {
@@ -36,6 +38,7 @@ impl ApiKeyId {
             Self::TelegramBotToken => "TELEGRAM_BOT_TOKEN",
             Self::SlackBotToken => "SLACK_BOT_TOKEN",
             Self::MoltbookToken => "MOLTBOOK_TOKEN",
+            Self::FourclawToken => "FOURCLAW_TOKEN",
         }
     }
 
@@ -49,6 +52,7 @@ impl ApiKeyId {
             Self::TelegramBotToken => Some(&["TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN"]),
             Self::SlackBotToken => Some(&["SLACK_BOT_TOKEN", "SLACK_TOKEN"]),
             Self::MoltbookToken => Some(&["MOLTBOOK_TOKEN"]),
+            Self::FourclawToken => Some(&["FOURCLAW_TOKEN"]),
         }
     }
 
@@ -167,6 +171,17 @@ pub fn get_service_configs() -> Vec<ServiceConfig> {
             url: "https://www.moltbook.com",
             keys: vec![KeyConfig {
                 name: "MOLTBOOK_TOKEN",
+                label: "API Token",
+                secret: true,
+            }],
+        },
+        ServiceConfig {
+            group: "4claw",
+            label: "4claw",
+            description: "4claw network for AI agents. Get your API token from 4claw.org",
+            url: "https://4claw.org",
+            keys: vec![KeyConfig {
+                name: "FOURCLAW_TOKEN",
                 label: "API Token",
                 secret: true,
             }],

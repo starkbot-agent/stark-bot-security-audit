@@ -69,6 +69,11 @@ pub enum EventType {
     TaskQueueUpdate,    // Full task queue update (on define_tasks, session load)
     TaskStatusChange,   // Individual task status change
     SessionComplete,    // Session marked complete (all tasks done)
+    // Cron execution events (for web channel)
+    CronExecutionStartedOnChannel,  // Cron job started on web channel (main mode)
+    CronExecutionStoppedOnChannel,  // Cron job stopped on web channel
+    // AI client events
+    AiRetrying,  // AI API call is being retried after transient error
 }
 
 impl EventType {
@@ -124,6 +129,9 @@ impl EventType {
             Self::TaskQueueUpdate => "task.queue_update",
             Self::TaskStatusChange => "task.status_change",
             Self::SessionComplete => "session.complete",
+            Self::CronExecutionStartedOnChannel => "cron.execution_started_on_channel",
+            Self::CronExecutionStoppedOnChannel => "cron.execution_stopped_on_channel",
+            Self::AiRetrying => "ai.retrying",
         }
     }
 }
@@ -980,6 +988,74 @@ impl GatewayEvent {
             serde_json::json!({
                 "channel_id": channel_id,
                 "session_id": session_id,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    // =====================================================
+    // Cron Execution Events (for web channel)
+    // =====================================================
+
+    /// Cron job execution started on web channel (main mode)
+    /// This allows the frontend to show a stop button for cron jobs
+    pub fn cron_execution_started_on_channel(
+        channel_id: i64,
+        job_id: &str,
+        job_name: &str,
+        session_mode: &str,
+    ) -> Self {
+        Self::new(
+            EventType::CronExecutionStartedOnChannel,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "job_id": job_id,
+                "job_name": job_name,
+                "session_mode": session_mode,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Cron job execution stopped on web channel
+    pub fn cron_execution_stopped_on_channel(
+        channel_id: i64,
+        job_id: &str,
+        reason: &str,
+    ) -> Self {
+        Self::new(
+            EventType::CronExecutionStoppedOnChannel,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "job_id": job_id,
+                "reason": reason,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    // =====================================================
+    // AI Client Events
+    // =====================================================
+
+    /// AI API call is being retried after transient error
+    pub fn ai_retrying(
+        channel_id: i64,
+        attempt: u32,
+        max_attempts: u32,
+        wait_seconds: u64,
+        error: &str,
+        provider: &str,
+    ) -> Self {
+        Self::new(
+            EventType::AiRetrying,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "wait_seconds": wait_seconds,
+                "error": error,
+                "provider": provider,
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         )

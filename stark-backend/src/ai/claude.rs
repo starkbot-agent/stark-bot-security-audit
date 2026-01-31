@@ -3,20 +3,26 @@ use crate::ai::types::{
     ClaudeMessageContent, ClaudeTool, ThinkingLevel, ToolCall, ToolResponse,
 };
 use crate::ai::{Message, MessageRole};
+use crate::gateway::events::EventBroadcaster;
+use crate::gateway::protocol::GatewayEvent;
 use crate::tools::ToolDefinition;
 use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Debug)]
 pub struct ClaudeClient {
     client: Client,
     endpoint: String,
     model: String,
     /// Thinking budget in tokens (0 = disabled)
     thinking_budget: AtomicU32,
+    /// Optional broadcaster for emitting retry events
+    broadcaster: Option<Arc<EventBroadcaster>>,
+    /// Channel ID for events
+    channel_id: Option<i64>,
 }
 
 impl Clone for ClaudeClient {
@@ -26,6 +32,8 @@ impl Clone for ClaudeClient {
             endpoint: self.endpoint.clone(),
             model: self.model.clone(),
             thinking_budget: AtomicU32::new(self.thinking_budget.load(Ordering::SeqCst)),
+            broadcaster: self.broadcaster.clone(),
+            channel_id: self.channel_id,
         }
     }
 }
@@ -144,7 +152,30 @@ impl ClaudeClient {
                 .to_string(),
             model: model.unwrap_or("claude-sonnet-4-20250514").to_string(),
             thinking_budget: AtomicU32::new(0),
+            broadcaster: None,
+            channel_id: None,
         })
+    }
+
+    /// Set the broadcaster for emitting retry events
+    pub fn with_broadcaster(mut self, broadcaster: Arc<EventBroadcaster>, channel_id: i64) -> Self {
+        self.broadcaster = Some(broadcaster);
+        self.channel_id = Some(channel_id);
+        self
+    }
+
+    /// Emit a retry event if broadcaster is configured
+    fn emit_retry_event(&self, attempt: u32, max_attempts: u32, wait_seconds: u64, error: &str) {
+        if let (Some(broadcaster), Some(channel_id)) = (&self.broadcaster, self.channel_id) {
+            broadcaster.broadcast(GatewayEvent::ai_retrying(
+                channel_id,
+                attempt,
+                max_attempts,
+                wait_seconds,
+                error,
+                "claude",
+            ));
+        }
     }
 
     /// Set the thinking level for subsequent requests
@@ -206,33 +237,89 @@ impl ClaudeClient {
 
         log::debug!("Sending request to Claude API: {:?}", request);
 
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("Claude API request failed: {}", e))?;
+        // Retry configuration for transient errors
+        const MAX_RETRIES: u32 = 3;
+        const BASE_DELAY_MS: u64 = 2000;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
+        let mut last_error: Option<String> = None;
+        let mut response_data_opt: Option<ClaudeCompletionResponse> = None;
 
-            // Try to parse the error response
-            if let Ok(error_response) = serde_json::from_str::<ClaudeErrorResponse>(&error_text) {
-                return Err(format!("Claude API error: {}", error_response.error.message));
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let delay_ms = BASE_DELAY_MS * (1 << (attempt - 1));
+                let wait_secs = delay_ms / 1000;
+                log::warn!(
+                    "[CLAUDE] Retry attempt {}/{} after {}ms delay",
+                    attempt,
+                    MAX_RETRIES,
+                    delay_ms
+                );
+                // Emit retry event to frontend
+                self.emit_retry_event(
+                    attempt,
+                    MAX_RETRIES,
+                    wait_secs,
+                    last_error.as_deref().unwrap_or("Unknown error"),
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
 
-            return Err(format!(
-                "Claude API returned error status: {}, body: {}",
-                status, error_text
-            ));
+            let request_result = self
+                .client
+                .post(&self.endpoint)
+                .json(&request)
+                .send()
+                .await;
+
+            let response = match request_result {
+                Ok(r) => r,
+                Err(e) => {
+                    last_error = Some(format!("Claude API request failed: {}", e));
+                    if attempt < MAX_RETRIES {
+                        log::warn!("[CLAUDE] Request failed (attempt {}): {}, will retry", attempt + 1, e);
+                        continue;
+                    }
+                    return Err(last_error.unwrap());
+                }
+            };
+
+            let status = response.status();
+            let status_code = status.as_u16();
+            let is_retryable = matches!(status_code, 429 | 502 | 503 | 504);
+
+            if !status.is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+
+                if is_retryable && attempt < MAX_RETRIES {
+                    log::warn!(
+                        "[CLAUDE] Received retryable status {} (attempt {}), will retry",
+                        status,
+                        attempt + 1
+                    );
+                    last_error = Some(format!("HTTP {}: {}", status, error_text));
+                    continue;
+                }
+
+                if let Ok(error_response) = serde_json::from_str::<ClaudeErrorResponse>(&error_text) {
+                    return Err(format!("Claude API error: {}", error_response.error.message));
+                }
+
+                return Err(format!(
+                    "Claude API returned error status: {}, body: {}",
+                    status, error_text
+                ));
+            }
+
+            response_data_opt = Some(response
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse Claude response: {}", e))?);
+            break;
         }
 
-        let response_data: ClaudeCompletionResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse Claude response: {}", e))?;
+        let response_data = response_data_opt.ok_or_else(|| {
+            last_error.unwrap_or_else(|| "Max retries exceeded".to_string())
+        })?;
 
         // Concatenate all text content from response
         let content: String = response_data
@@ -318,32 +405,89 @@ impl ClaudeClient {
             serde_json::to_string_pretty(&request).unwrap_or_default()
         );
 
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("Claude API request failed: {}", e))?;
+        // Retry configuration for transient errors
+        const MAX_RETRIES: u32 = 3;
+        const BASE_DELAY_MS: u64 = 2000;
 
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
+        let mut last_error: Option<String> = None;
+        let mut response_data_opt: Option<ClaudeCompletionResponse> = None;
 
-            if let Ok(error_response) = serde_json::from_str::<ClaudeErrorResponse>(&error_text) {
-                return Err(format!("Claude API error: {}", error_response.error.message));
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let delay_ms = BASE_DELAY_MS * (1 << (attempt - 1));
+                let wait_secs = delay_ms / 1000;
+                log::warn!(
+                    "[CLAUDE] Tool request retry attempt {}/{} after {}ms delay",
+                    attempt,
+                    MAX_RETRIES,
+                    delay_ms
+                );
+                // Emit retry event to frontend
+                self.emit_retry_event(
+                    attempt,
+                    MAX_RETRIES,
+                    wait_secs,
+                    last_error.as_deref().unwrap_or("Unknown error"),
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
 
-            return Err(format!(
-                "Claude API returned error status: {}, body: {}",
-                status, error_text
-            ));
+            let request_result = self
+                .client
+                .post(&self.endpoint)
+                .json(&request)
+                .send()
+                .await;
+
+            let response = match request_result {
+                Ok(r) => r,
+                Err(e) => {
+                    last_error = Some(format!("Claude API request failed: {}", e));
+                    if attempt < MAX_RETRIES {
+                        log::warn!("[CLAUDE] Tool request failed (attempt {}): {}, will retry", attempt + 1, e);
+                        continue;
+                    }
+                    return Err(last_error.unwrap());
+                }
+            };
+
+            let status = response.status();
+            let status_code = status.as_u16();
+            let is_retryable = matches!(status_code, 429 | 502 | 503 | 504);
+
+            if !status.is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+
+                if is_retryable && attempt < MAX_RETRIES {
+                    log::warn!(
+                        "[CLAUDE] Tool request received retryable status {} (attempt {}), will retry",
+                        status,
+                        attempt + 1
+                    );
+                    last_error = Some(format!("HTTP {}: {}", status, error_text));
+                    continue;
+                }
+
+                if let Ok(error_response) = serde_json::from_str::<ClaudeErrorResponse>(&error_text) {
+                    return Err(format!("Claude API error: {}", error_response.error.message));
+                }
+
+                return Err(format!(
+                    "Claude API returned error status: {}, body: {}",
+                    status, error_text
+                ));
+            }
+
+            response_data_opt = Some(response
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse Claude response: {}", e))?);
+            break;
         }
 
-        let response_data: ClaudeCompletionResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse Claude response: {}", e))?;
+        let response_data = response_data_opt.ok_or_else(|| {
+            last_error.unwrap_or_else(|| "Max retries exceeded".to_string())
+        })?;
 
         // Parse the response content
         let mut text_content = String::new();

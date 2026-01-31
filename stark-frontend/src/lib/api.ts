@@ -220,9 +220,13 @@ export async function getSessions(): Promise<Array<{
   id: number;
   channel_type: string;
   channel_id: number;
+  platform_chat_id?: string;
+  is_active?: boolean;
+  completion_status?: string;
   created_at: string;
   updated_at: string;
   message_count?: number;
+  initial_query?: string;
 }>> {
   return apiFetch('/sessions');
 }
@@ -258,18 +262,113 @@ export async function getOrCreateSession(
   });
 }
 
-// Get the web chat session (channel_type="web", channel_id=0)
+// Reset a session (marks old as inactive, creates new one with same settings)
+export async function resetSession(id: number): Promise<{
+  id: number;
+  channel_type: string;
+  channel_id: number;
+  is_active: boolean;
+  completion_status: string;
+  created_at: string;
+  updated_at: string;
+}> {
+  return apiFetch(`/sessions/${id}/reset`, { method: 'POST' });
+}
+
+// Stop a session (cancels execution and marks as cancelled)
+export async function stopSession(id: number): Promise<{
+  success: boolean;
+  session?: {
+    id: number;
+    completion_status: string;
+  };
+  cancelled_agents?: number;
+  error?: string;
+}> {
+  return apiFetch(`/sessions/${id}/stop`, { method: 'POST' });
+}
+
+// Resume a session (marks as active so it can continue processing)
+export async function resumeSession(id: number): Promise<{
+  success: boolean;
+  session?: {
+    id: number;
+    completion_status: string;
+  };
+  error?: string;
+}> {
+  return apiFetch(`/sessions/${id}/resume`, { method: 'POST' });
+}
+
+// Web session response type
+export interface WebSessionInfo {
+  session_id: number;
+  completion_status: string;
+  message_count: number | null;
+  created_at: string;
+}
+
+// Get the current active web chat session from the backend
+// The backend tracks which session is active for the current user
+export async function getActiveWebSession(): Promise<WebSessionInfo | null> {
+  const response = await apiFetch<{
+    success: boolean;
+    session_id?: number;
+    completion_status?: string;
+    message_count?: number;
+    created_at?: string;
+    error?: string;
+  }>('/chat/session');
+
+  if (response.success && response.session_id) {
+    return {
+      session_id: response.session_id,
+      completion_status: response.completion_status || 'active',
+      message_count: response.message_count ?? null,
+      created_at: response.created_at || new Date().toISOString(),
+    };
+  }
+  return null;
+}
+
+// Create a new web session (resets the current one)
+export async function createNewWebSession(): Promise<WebSessionInfo | null> {
+  const response = await apiFetch<{
+    success: boolean;
+    session_id?: number;
+    completion_status?: string;
+    message_count?: number;
+    created_at?: string;
+    error?: string;
+  }>('/chat/session/new', { method: 'POST' });
+
+  if (response.success && response.session_id) {
+    return {
+      session_id: response.session_id,
+      completion_status: response.completion_status || 'active',
+      message_count: response.message_count ?? 0,
+      created_at: response.created_at || new Date().toISOString(),
+    };
+  }
+  return null;
+}
+
+// Legacy: Get the web chat session from sessions list (fallback)
 export async function getWebSession(): Promise<{
   id: number;
   channel_type: string;
   channel_id: number;
+  is_active?: boolean;
+  completion_status?: string;
   created_at: string;
   updated_at: string;
   message_count?: number;
 } | null> {
-  // First try to find existing web session in the list
+  // Find the active web session
   const sessions = await getSessions();
-  const webSession = sessions.find(s => s.channel_type === 'web' && s.channel_id === 0);
+  // Prefer active session, fall back to any web session
+  const activeWebSession = sessions.find(s => s.channel_type === 'web' && s.channel_id === 0 && s.is_active !== false);
+  const webSession = activeWebSession || sessions.find(s => s.channel_type === 'web' && s.channel_id === 0);
   return webSession || null;
 }
 
@@ -877,6 +976,16 @@ export async function stopExecution(): Promise<StopExecutionResponse> {
   return apiFetch('/chat/stop', {
     method: 'POST',
   });
+}
+
+// Execution Status API
+export interface ExecutionStatusResponse {
+  running: boolean;
+  execution_id: string | null;
+}
+
+export async function getExecutionStatus(): Promise<ExecutionStatusResponse> {
+  return apiFetch('/chat/execution-status');
 }
 
 // Subagent API

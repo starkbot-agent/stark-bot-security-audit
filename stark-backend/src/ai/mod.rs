@@ -198,6 +198,21 @@ impl AiClient {
         }
     }
 
+    /// Set the broadcaster for emitting retry events to the frontend
+    pub fn with_broadcaster(self, broadcaster: Arc<EventBroadcaster>, channel_id: i64) -> Self {
+        match self {
+            AiClient::Claude(client) => {
+                AiClient::Claude(client.with_broadcaster(broadcaster, channel_id))
+            }
+            AiClient::OpenAI(client) => {
+                AiClient::OpenAI(client.with_broadcaster(broadcaster, channel_id))
+            }
+            AiClient::Llama(client) => {
+                AiClient::Llama(client.with_broadcaster(broadcaster, channel_id))
+            }
+        }
+    }
+
     /// Build a tool history entry from tool calls and responses
     pub fn build_tool_history_entry(
         tool_calls: Vec<ToolCall>,

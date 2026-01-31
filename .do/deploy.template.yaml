@@ -1,0 +1,20 @@
+spec:
+  name: starkbot
+  services:
+    - name: web
+      dockerfile_path: Dockerfile
+      http_port: 8080
+      instance_size_slug: basic-xxs
+      instance_count: 1
+      routes:
+        - path: /
+      envs:
+        - key: RUST_LOG
+          scope: RUN_TIME
+          value: info
+        - key: LOGIN_ADMIN_PUBLIC_ADDRESS
+          scope: RUN_TIME
+          type: SECRET
+        - key: BURNER_WALLET_BOT_PRIVATE_KEY
+          scope: RUN_TIME
+          type: SECRET

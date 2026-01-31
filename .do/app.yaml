@@ -1,10 +1,6 @@
 name: starkbot
 services:
   - name: web
-    github:
-      repo: ethereumdegen/stark-bot
-      branch: master
-      deploy_on_push: true
     dockerfile_path: Dockerfile
     http_port: 8080
     instance_size_slug: basic-xxs
@@ -13,6 +9,7 @@ services:
       - path: /
     envs:
       - key: RUST_LOG
+        scope: RUN_TIME
         value: info
       - key: LOGIN_ADMIN_PUBLIC_ADDRESS
         scope: RUN_TIME

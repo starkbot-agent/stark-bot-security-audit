@@ -134,6 +134,15 @@ impl Scheduler {
 
         log::info!("Executing cron job '{}' ({})", job.name, job.job_id);
 
+        // IMPORTANT: Calculate and set next_run_at BEFORE execution to prevent race conditions
+        // where the same job could be picked up twice if execution takes longer than poll interval
+        let next_run = self.calculate_next_run(job);
+        let next_run_str = next_run.map(|dt| dt.to_rfc3339());
+        if let Err(e) = self.db.mark_cron_job_started(job.id, next_run_str.as_deref()) {
+            log::error!("Failed to mark cron job as started: {}", e);
+            // Continue anyway - the job should still run
+        }
+
         // Broadcast job start event
         self.broadcaster.broadcast(GatewayEvent::custom(
             "cron_job_started",
@@ -167,11 +176,8 @@ impl Scheduler {
         let completed_at = Utc::now();
         let duration_ms = (completed_at - started_at).num_milliseconds();
 
-        // Calculate next run time
-        let next_run = self.calculate_next_run(job);
-        let next_run_str = next_run.map(|dt| dt.to_rfc3339());
-
-        // Update job status
+        // Note: next_run_at was already set at the start to prevent race conditions
+        // Update job status with final result
         let success = result.error.is_none();
         self.db
             .update_cron_job_run_status(

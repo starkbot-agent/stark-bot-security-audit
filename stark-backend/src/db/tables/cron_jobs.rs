@@ -277,6 +277,20 @@ impl Database {
         Ok(())
     }
 
+    /// Mark a cron job as started by setting next_run_at to prevent duplicate execution
+    /// This should be called BEFORE the job executes to prevent race conditions
+    pub fn mark_cron_job_started(&self, id: i64, next_run_at: Option<&str>) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "UPDATE cron_jobs SET next_run_at = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![next_run_at, now, id],
+        )?;
+
+        Ok(())
+    }
+
     /// Delete a cron job
     pub fn delete_cron_job(&self, id: i64) -> SqliteResult<bool> {
         let conn = self.conn.lock().unwrap();

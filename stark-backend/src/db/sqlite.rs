@@ -871,6 +871,33 @@ impl Database {
             [],
         );
 
+        // Broadcasted transactions table - persistent history of all crypto tx broadcasts
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS broadcasted_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT UNIQUE NOT NULL,
+                network TEXT NOT NULL,
+                from_address TEXT NOT NULL,
+                to_address TEXT NOT NULL,
+                value TEXT NOT NULL,
+                value_formatted TEXT NOT NULL,
+                tx_hash TEXT,
+                explorer_url TEXT,
+                status TEXT NOT NULL DEFAULT 'broadcast',
+                broadcast_mode TEXT NOT NULL,
+                error TEXT,
+                broadcast_at TEXT NOT NULL,
+                confirmed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_broadcasted_tx_hash ON broadcasted_transactions(tx_hash)",
+            [],
+        )?;
+
         Ok(())
     }
 

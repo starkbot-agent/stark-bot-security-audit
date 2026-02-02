@@ -139,9 +139,9 @@ async fn main() -> std::io::Result<()> {
     let validator_registry = Arc::new(tool_validators::create_default_registry());
     log::info!("Registered {} tool validators", validator_registry.len());
 
-    // Initialize Transaction Queue Manager
+    // Initialize Transaction Queue Manager with DB for persistent broadcast history
     log::info!("Initializing transaction queue manager");
-    let tx_queue = Arc::new(TxQueueManager::new());
+    let tx_queue = Arc::new(TxQueueManager::with_db(db.clone()));
 
     // Create the shared MessageDispatcher for all message processing
     log::info!("Initializing message dispatcher");
@@ -265,6 +265,7 @@ async fn main() -> std::io::Result<()> {
             .configure(controllers::intrinsic::config)
             .configure(controllers::journal::config)
             .configure(controllers::tx_queue::config)
+            .configure(controllers::broadcasted_transactions::config)
             // WebSocket Gateway route (same port as HTTP, required for single-port platforms)
             .route("/ws", web::get().to(gateway::actix_ws::ws_handler));
 

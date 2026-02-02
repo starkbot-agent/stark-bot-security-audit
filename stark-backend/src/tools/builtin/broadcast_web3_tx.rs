@@ -244,8 +244,8 @@ impl Tool for BroadcastWeb3TxTool {
         let explorer_base = queued_tx.get_explorer_base_url();
         let explorer_url = format!("{}/{}", explorer_base, tx_hash_str);
 
-        // Mark as broadcast
-        tx_queue.mark_broadcast(&params.uuid, &tx_hash_str, &explorer_url);
+        // Mark as broadcast (rogue mode - agent initiated)
+        tx_queue.mark_broadcast(&params.uuid, &tx_hash_str, &explorer_url, "rogue");
 
         // Emit tx.pending event
         if let (Some(broadcaster), Some(ch_id)) = (&context.broadcaster, context.channel_id) {

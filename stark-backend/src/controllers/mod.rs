@@ -1,6 +1,7 @@
 pub mod agent_settings;
 pub mod api_keys;
 pub mod auth;
+pub mod broadcasted_transactions;
 pub mod channels;
 pub mod chat;
 pub mod cron;

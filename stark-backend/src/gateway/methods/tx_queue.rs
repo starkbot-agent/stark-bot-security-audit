@@ -74,8 +74,8 @@ pub async fn handle_tx_queue_confirm(
     let tx_hash_str = format!("{:?}", tx_hash);
     let explorer_url = format!("{}/{}", tx.get_explorer_base_url(), tx_hash_str);
 
-    // Mark as broadcast
-    tx_queue.mark_broadcast(&params.uuid, &tx_hash_str, &explorer_url);
+    // Mark as broadcast (partner mode - user confirmed)
+    tx_queue.mark_broadcast(&params.uuid, &tx_hash_str, &explorer_url, "partner");
 
     log::info!("[tx_queue.confirm] Transaction {} broadcast as {}", params.uuid, tx_hash_str);
 

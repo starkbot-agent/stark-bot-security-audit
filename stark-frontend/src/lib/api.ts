@@ -1304,3 +1304,43 @@ export async function getPendingTransactions(): Promise<QueuedTransactionsRespon
 export async function getQueuedTransaction(uuid: string): Promise<QueuedTransactionResponse> {
   return apiFetch(`/tx-queue/${encodeURIComponent(uuid)}`);
 }
+
+// Broadcasted Transactions API (persistent history)
+export interface BroadcastedTransactionInfo {
+  id: number;
+  uuid: string;
+  network: string;
+  from_address: string;
+  to_address: string;
+  value: string;
+  value_formatted: string;
+  tx_hash?: string;
+  explorer_url?: string;
+  status: 'broadcast' | 'confirmed' | 'failed';
+  broadcast_mode: 'rogue' | 'partner';
+  error?: string;
+  broadcast_at: string;
+  confirmed_at?: string;
+  created_at: string;
+}
+
+export interface BroadcastedTransactionsResponse {
+  success: boolean;
+  transactions: BroadcastedTransactionInfo[];
+  total: number;
+}
+
+export async function getBroadcastedTransactions(params?: {
+  status?: string;
+  network?: string;
+  broadcast_mode?: string;
+  limit?: number;
+}): Promise<BroadcastedTransactionsResponse> {
+  const queryParams = new URLSearchParams();
+  if (params?.status) queryParams.set('status', params.status);
+  if (params?.network) queryParams.set('network', params.network);
+  if (params?.broadcast_mode) queryParams.set('broadcast_mode', params.broadcast_mode);
+  if (params?.limit) queryParams.set('limit', String(params.limit));
+  const query = queryParams.toString();
+  return apiFetch(`/broadcasted-transactions${query ? `?${query}` : ''}`);
+}

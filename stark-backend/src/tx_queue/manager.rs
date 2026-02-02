@@ -7,12 +7,18 @@ use dashmap::DashMap;
 use std::sync::Arc;
 
 use super::types::{QueuedTransaction, QueuedTxStatus, QueuedTxSummary};
+use crate::db::tables::broadcasted_transactions::{
+    BroadcastMode, BroadcastedTxStatus, RecordBroadcastRequest,
+};
+use crate::db::Database;
 
 /// Manager for the transaction queue
 /// Uses DashMap for thread-safe concurrent access
 pub struct TxQueueManager {
     /// Map of UUID -> QueuedTransaction
     transactions: DashMap<String, QueuedTransaction>,
+    /// Optional database for persistent broadcast history
+    db: Option<Arc<Database>>,
 }
 
 impl TxQueueManager {
@@ -20,6 +26,15 @@ impl TxQueueManager {
     pub fn new() -> Self {
         Self {
             transactions: DashMap::new(),
+            db: None,
+        }
+    }
+
+    /// Create a new transaction queue manager with database persistence
+    pub fn with_db(db: Arc<Database>) -> Self {
+        Self {
+            transactions: DashMap::new(),
+            db: Some(db),
         }
     }
 
@@ -95,13 +110,37 @@ impl TxQueueManager {
     }
 
     /// Mark transaction as broadcast with tx_hash
-    pub fn mark_broadcast(&self, uuid: &str, tx_hash: &str, explorer_url: &str) -> bool {
+    /// broadcast_mode: "rogue" or "partner"
+    pub fn mark_broadcast(&self, uuid: &str, tx_hash: &str, explorer_url: &str, broadcast_mode: &str) -> bool {
         if let Some(mut tx) = self.transactions.get_mut(uuid) {
-            log::info!("[TxQueue] Transaction {} broadcast as {}", uuid, tx_hash);
+            log::info!("[TxQueue] Transaction {} broadcast as {} (mode: {})", uuid, tx_hash, broadcast_mode);
             tx.status = QueuedTxStatus::Broadcast;
             tx.tx_hash = Some(tx_hash.to_string());
             tx.explorer_url = Some(explorer_url.to_string());
             tx.broadcast_at = Some(Utc::now());
+
+            // Persist to database if available
+            if let Some(ref db) = self.db {
+                let mode = match broadcast_mode {
+                    "rogue" => BroadcastMode::Rogue,
+                    _ => BroadcastMode::Partner,
+                };
+                let req = RecordBroadcastRequest {
+                    uuid: tx.uuid.clone(),
+                    network: tx.network.clone(),
+                    from_address: tx.from.clone(),
+                    to_address: tx.to.clone(),
+                    value: tx.value.clone(),
+                    value_formatted: tx.format_value_eth(),
+                    tx_hash: Some(tx_hash.to_string()),
+                    explorer_url: Some(explorer_url.to_string()),
+                    broadcast_mode: mode,
+                };
+                if let Err(e) = db.record_broadcast(req) {
+                    log::error!("[TxQueue] Failed to persist broadcast to DB: {}", e);
+                }
+            }
+
             true
         } else {
             false
@@ -113,6 +152,14 @@ impl TxQueueManager {
         if let Some(mut tx) = self.transactions.get_mut(uuid) {
             log::info!("[TxQueue] Transaction {} confirmed", uuid);
             tx.status = QueuedTxStatus::Confirmed;
+
+            // Update database status if available
+            if let Some(ref db) = self.db {
+                if let Err(e) = db.update_broadcast_status(uuid, BroadcastedTxStatus::Confirmed, None) {
+                    log::error!("[TxQueue] Failed to update DB status: {}", e);
+                }
+            }
+
             true
         } else {
             false
@@ -125,6 +172,14 @@ impl TxQueueManager {
             log::warn!("[TxQueue] Transaction {} failed: {}", uuid, error);
             tx.status = QueuedTxStatus::Failed;
             tx.error = Some(error.to_string());
+
+            // Update database status if available
+            if let Some(ref db) = self.db {
+                if let Err(e) = db.update_broadcast_status(uuid, BroadcastedTxStatus::Failed, Some(error)) {
+                    log::error!("[TxQueue] Failed to update DB status: {}", e);
+                }
+            }
+
             true
         } else {
             false
@@ -246,7 +301,7 @@ mod tests {
         assert_eq!(tx.status, QueuedTxStatus::Broadcasting);
 
         // Mark as broadcast
-        assert!(manager.mark_broadcast("test-uuid-2", "0xhash", "https://basescan.org/tx/0xhash"));
+        assert!(manager.mark_broadcast("test-uuid-2", "0xhash", "https://basescan.org/tx/0xhash", "partner"));
         let tx = manager.get("test-uuid-2").unwrap();
         assert_eq!(tx.status, QueuedTxStatus::Broadcast);
         assert_eq!(tx.tx_hash, Some("0xhash".to_string()));

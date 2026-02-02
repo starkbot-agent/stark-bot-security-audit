@@ -16,3 +16,4 @@ mod cron_jobs;      // cron_jobs, cron_job_runs
 mod heartbeat;      // heartbeat_configs
 mod gmail;          // gmail_configs
 mod agent_contexts; // agent_contexts (multi-agent orchestrator state)
+pub mod broadcasted_transactions; // broadcasted_transactions (crypto tx history)

@@ -72,8 +72,11 @@ COPY abis /app/abis
 # Copy the skills directory (bundled skills loaded on boot)
 COPY skills /app/skills
 
-# Copy SOUL.md (bot personality/identity)
+# Copy SOUL.md (bot personality/identity - copied to soul dir on startup)
 COPY SOUL.md /app/SOUL.md
+
+# Create directories for workspace, journal, and soul
+RUN mkdir -p /app/workspace /app/journal /app/soul
 
 # Expose ports (HTTP + Gateway WebSocket)
 EXPOSE 8080

@@ -1,4 +1,4 @@
-use crate::config::journal_dir;
+use crate::config::{journal_dir, soul_dir};
 use crate::tools::registry::Tool;
 use crate::tools::types::{
     PropertySchema, ToolContext, ToolDefinition, ToolGroup, ToolInputSchema, ToolResult,
@@ -104,19 +104,15 @@ impl Tool for ReadFileTool {
         let intrinsic_match = INTRINSIC_FILES.iter().find(|(name, _)| *name == params.path);
 
         let content = if let Some((name, _)) = intrinsic_match {
-            // Read intrinsic files from workspace (the agent's working copy)
-            // SOUL.md is copied to workspace on startup to protect the original
-            let workspace = context
-                .workspace_dir
-                .as_ref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(crate::config::workspace_dir()));
+            // Read intrinsic files from soul directory (the agent's working copy)
+            // SOUL.md is copied to soul directory on startup to protect the original
+            let soul = PathBuf::from(soul_dir());
 
-            let full_path = workspace.join(name);
+            let full_path = soul.join(name);
             match tokio::fs::read_to_string(&full_path).await {
                 Ok(c) => c,
                 Err(e) => return ToolResult::error(format!(
-                    "Failed to read '{}' from workspace: {}. Make sure the workspace was initialized properly.",
+                    "Failed to read '{}' from soul directory: {}. Make sure the workspace was initialized properly.",
                     name, e
                 )),
             }

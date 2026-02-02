@@ -10,6 +10,7 @@ pub mod env_vars {
     pub const WORKSPACE_DIR: &str = "STARK_WORKSPACE_DIR";
     pub const SKILLS_DIR: &str = "STARK_SKILLS_DIR";
     pub const JOURNAL_DIR: &str = "STARK_JOURNAL_DIR";
+    pub const SOUL_DIR: &str = "STARK_SOUL_DIR";
     // Memory configuration
     pub const MEMORY_ENABLE_PRE_COMPACTION_FLUSH: &str = "STARK_MEMORY_ENABLE_PRE_COMPACTION_FLUSH";
     pub const MEMORY_ENABLE_ENTITY_EXTRACTION: &str = "STARK_MEMORY_ENABLE_ENTITY_EXTRACTION";
@@ -27,6 +28,7 @@ pub mod defaults {
     pub const WORKSPACE_DIR: &str = "./workspace";
     pub const SKILLS_DIR: &str = "./skills";
     pub const JOURNAL_DIR: &str = "./journal";
+    pub const SOUL_DIR: &str = "./soul";
 }
 
 /// Get the workspace directory from environment or default
@@ -42,6 +44,11 @@ pub fn skills_dir() -> String {
 /// Get the journal directory from environment or default
 pub fn journal_dir() -> String {
     env::var(env_vars::JOURNAL_DIR).unwrap_or_else(|_| defaults::JOURNAL_DIR.to_string())
+}
+
+/// Get the soul directory from environment or default
+pub fn soul_dir() -> String {
+    env::var(env_vars::SOUL_DIR).unwrap_or_else(|_| defaults::SOUL_DIR.to_string())
 }
 
 /// Get the burner wallet private key from environment (for tools)
@@ -139,9 +146,9 @@ pub fn memory_config() -> MemoryConfig {
     MemoryConfig::from_env()
 }
 
-/// Get the path to SOUL.md in the workspace
+/// Get the path to SOUL.md in the soul directory
 pub fn soul_document_path() -> PathBuf {
-    PathBuf::from(workspace_dir()).join("SOUL.md")
+    PathBuf::from(soul_dir()).join("SOUL.md")
 }
 
 /// Find the original SOUL.md in the repo root
@@ -156,9 +163,9 @@ fn find_original_soul() -> Option<PathBuf> {
     None
 }
 
-/// Initialize the workspace directory and copy SOUL.md
+/// Initialize the workspace, journal, and soul directories
 /// This should be called at startup before any agent processing begins
-/// SOUL.md is copied fresh on every startup from the original to the workspace
+/// SOUL.md is copied fresh on every startup from the original to the soul directory
 /// This protects the original from agent modifications while allowing the user
 /// to edit the original (via web UI) with changes propagating on restart
 pub fn initialize_workspace() -> std::io::Result<()> {
@@ -168,18 +175,28 @@ pub fn initialize_workspace() -> std::io::Result<()> {
     // Create workspace directory if it doesn't exist
     std::fs::create_dir_all(workspace_path)?;
 
-    // Copy SOUL.md from repo root to workspace on every boot
+    // Create journal directory if it doesn't exist
+    let journal = journal_dir();
+    let journal_path = Path::new(&journal);
+    std::fs::create_dir_all(journal_path)?;
+
+    // Create soul directory if it doesn't exist
+    let soul = soul_dir();
+    let soul_path = Path::new(&soul);
+    std::fs::create_dir_all(soul_path)?;
+
+    // Copy SOUL.md from repo root to soul directory on every boot
     // This ensures the agent always starts with the user's current version
-    let workspace_soul = workspace_path.join("SOUL.md");
+    let soul_document = soul_path.join("SOUL.md");
     if let Some(original_soul) = find_original_soul() {
         log::info!(
             "Copying SOUL.md from {:?} to {:?}",
             original_soul,
-            workspace_soul
+            soul_document
         );
-        std::fs::copy(&original_soul, &workspace_soul)?;
+        std::fs::copy(&original_soul, &soul_document)?;
     } else {
-        log::warn!("Original SOUL.md not found - workspace will not have a soul document");
+        log::warn!("Original SOUL.md not found - soul directory will not have a soul document");
     }
 
     Ok(())

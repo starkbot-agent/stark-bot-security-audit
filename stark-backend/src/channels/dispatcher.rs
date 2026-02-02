@@ -114,6 +114,17 @@ fn create_memory_markers() -> Vec<MemoryMarkerConfig> {
     ]
 }
 
+/// Result of attempting to advance to the next task in the queue
+enum TaskAdvanceResult {
+    /// Started working on the next task
+    NextTaskStarted,
+    /// No more tasks remain, session should complete
+    AllTasksComplete,
+    /// No pending tasks but queue is in inconsistent state (has non-completed tasks)
+    /// This shouldn't happen in normal operation
+    InconsistentState,
+}
+
 /// Dispatcher routes messages to the AI and returns responses
 pub struct MessageDispatcher {
     db: Arc<Database>,
@@ -1026,6 +1037,7 @@ impl MessageDispatcher {
     fn broadcast_tasks_update(&self, channel_id: i64, orchestrator: &Orchestrator) {
         let context = orchestrator.context();
         let mode = context.mode;
+        let has_tasks = !context.task_queue.is_empty();
 
         // Send simplified status (no task list anymore)
         let stats_json = serde_json::json!({
@@ -1043,13 +1055,8 @@ impl MessageDispatcher {
         ));
 
         // Also broadcast task queue update if there are tasks
-        if !context.task_queue.is_empty() {
-            let current_task_id = context.task_queue.current_task().map(|t| t.id);
-            self.broadcaster.broadcast(GatewayEvent::task_queue_update(
-                channel_id,
-                &context.task_queue.tasks,
-                current_task_id,
-            ));
+        if has_tasks {
+            self.broadcast_task_queue_update(channel_id, orchestrator);
         }
     }
 
@@ -1087,6 +1094,47 @@ impl MessageDispatcher {
             channel_id,
             session_id,
         ));
+    }
+
+    /// Try to advance to the next task in the queue.
+    /// If a next task exists, marks it as in_progress and broadcasts updates.
+    /// If no tasks remain, marks the session as complete in the database and broadcasts completion.
+    /// Returns TaskAdvanceResult indicating what happened.
+    fn advance_to_next_task_or_complete(
+        &self,
+        channel_id: i64,
+        session_id: i64,
+        orchestrator: &mut Orchestrator,
+    ) -> TaskAdvanceResult {
+        if let Some(next_task) = orchestrator.pop_next_task() {
+            log::info!(
+                "[ORCHESTRATED_LOOP] Starting next task: {} - {}",
+                next_task.id,
+                next_task.description
+            );
+            self.broadcast_task_status_change(
+                channel_id,
+                next_task.id,
+                "in_progress",
+                &next_task.description,
+            );
+            self.broadcast_task_queue_update(channel_id, orchestrator);
+            TaskAdvanceResult::NextTaskStarted
+        } else if orchestrator.task_queue_is_empty() || orchestrator.all_tasks_complete() {
+            // Queue is empty or all tasks completed - end the session
+            log::info!("[ORCHESTRATED_LOOP] All tasks completed, stopping loop");
+            if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Complete) {
+                log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
+            }
+            self.broadcast_session_complete(channel_id, session_id);
+            TaskAdvanceResult::AllTasksComplete
+        } else {
+            // No pending tasks but queue has non-completed tasks (inconsistent state)
+            log::warn!(
+                "[ORCHESTRATED_LOOP] No pending tasks but queue in inconsistent state (not empty, not all complete)"
+            );
+            TaskAdvanceResult::InconsistentState
+        }
     }
 
     /// Generate response using native API tool calling with multi-agent orchestration
@@ -1191,28 +1239,12 @@ impl MessageDispatcher {
                     // If we deleted the current task, move to the next one
                     if was_current {
                         log::info!("[ORCHESTRATED_LOOP] Deleted task was the current task, moving to next");
-                        // Pop next task if available
-                        if let Some(next_task) = orchestrator.pop_next_task() {
-                            log::info!(
-                                "[ORCHESTRATED_LOOP] Starting next task after deletion: {} - {}",
-                                next_task.id,
-                                next_task.description
-                            );
-                            self.broadcast_task_status_change(
-                                original_message.channel_id,
-                                next_task.id,
-                                "in_progress",
-                                &next_task.description,
-                            );
-                            self.broadcast_task_queue_update(original_message.channel_id, orchestrator);
-                        } else if orchestrator.task_queue_is_empty() || orchestrator.all_tasks_complete() {
-                            // No more tasks, complete the session
-                            log::info!("[ORCHESTRATED_LOOP] No more tasks after deletion, completing session");
+                        if let TaskAdvanceResult::AllTasksComplete = self.advance_to_next_task_or_complete(
+                            original_message.channel_id,
+                            session_id,
+                            orchestrator,
+                        ) {
                             orchestrator_complete = true;
-                            if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Complete) {
-                                log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
-                            }
-                            self.broadcast_session_complete(original_message.channel_id, session_id);
                             break;
                         }
                     }
@@ -1766,34 +1798,13 @@ impl MessageDispatcher {
                                 }
 
                                 // Check if there are more tasks to process
-                                if let Some(next_task) = orchestrator.pop_next_task() {
-                                    // More tasks remain - continue the loop with the next task
-                                    log::info!(
-                                        "[ORCHESTRATED_LOOP] Starting next task: {} - {}",
-                                        next_task.id,
-                                        next_task.description
-                                    );
-                                    self.broadcast_task_status_change(
-                                        original_message.channel_id,
-                                        next_task.id,
-                                        "in_progress",
-                                        &next_task.description,
-                                    );
-                                    self.broadcast_task_queue_update(original_message.channel_id, orchestrator);
-                                    // DO NOT set orchestrator_complete - continue the loop
-                                } else {
-                                    // No more tasks - now we can end the session
-                                    log::info!("[ORCHESTRATED_LOOP] All tasks completed, stopping loop");
+                                if let TaskAdvanceResult::AllTasksComplete = self.advance_to_next_task_or_complete(
+                                    original_message.channel_id,
+                                    session_id,
+                                    orchestrator,
+                                ) {
                                     orchestrator_complete = true;
                                     final_summary = summary.clone();
-
-                                    // Mark session as complete in database
-                                    if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Complete) {
-                                        log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
-                                    }
-
-                                    // Broadcast session complete event
-                                    self.broadcast_session_complete(original_message.channel_id, session_id);
                                 }
                             }
                         }
@@ -2638,16 +2649,23 @@ impl MessageDispatcher {
 
     /// Load SOUL.md content if it exists
     fn load_soul() -> Option<String> {
-        // Try multiple locations for SOUL.md
-        let paths = [
+        // Primary location: soul directory from config
+        let soul_path = crate::config::soul_document_path();
+        if let Ok(content) = std::fs::read_to_string(&soul_path) {
+            log::debug!("[SOUL] Loaded from {:?}", soul_path);
+            return Some(content);
+        }
+
+        // Fallback: try repo root locations
+        let fallback_paths = [
             "SOUL.md",
             "./SOUL.md",
             "/app/SOUL.md",
         ];
 
-        for path in paths {
+        for path in fallback_paths {
             if let Ok(content) = std::fs::read_to_string(path) {
-                log::debug!("[SOUL] Loaded from {}", path);
+                log::debug!("[SOUL] Loaded from fallback {}", path);
                 return Some(content);
             }
         }

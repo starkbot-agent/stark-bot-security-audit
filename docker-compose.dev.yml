@@ -19,8 +19,14 @@ services:
       - ./abis:/app/abis
       # Mount skills directory for bundled skills
       - ./skills:/app/skills
-      # Mount SOUL.md for bot personality
+      # Mount SOUL.md for bot personality (original, copied to soul dir on startup)
       - ./SOUL.md:/app/SOUL.md
+      # Mount workspace directory for agent files
+      - ./workspace:/app/workspace
+      # Mount journal directory for agent notes
+      - ./journal:/app/journal
+      # Mount soul directory (SOUL.md copied here on startup)
+      - ./soul:/app/soul
       # Use named volume for target dir to avoid rebuilding deps every time
       - cargo-target:/app/target
       # Cache cargo registry for faster rebuilds

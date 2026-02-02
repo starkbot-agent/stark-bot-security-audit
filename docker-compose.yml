@@ -10,4 +10,10 @@ services:
     volumes:
       # Persistent database storage
       - ./data:/app/.db
+      # Persistent workspace for agent files
+      - ./workspace:/app/workspace
+      # Persistent journal for agent notes
+      - ./journal:/app/journal
+      # Soul directory (SOUL.md copied here on startup)
+      - ./soul:/app/soul
     restart: unless-stopped

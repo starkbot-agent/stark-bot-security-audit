@@ -2,6 +2,7 @@
 //!
 //! Shows transactions that have been signed but not yet broadcast.
 
+use crate::gateway::protocol::GatewayEvent;
 use crate::tools::builtin::web3_tx::Web3TxTool;
 use crate::tools::registry::Tool;
 use crate::tools::types::{
@@ -272,6 +273,31 @@ impl Tool for ListQueuedWeb3TxTool {
                 "created_at": tx.created_at.to_rfc3339()
             })
         }).collect();
+
+        // In partner mode, emit confirmation event for first pending tx
+        let is_rogue_mode = context.extra
+            .get("rogue_mode_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if !is_rogue_mode && pending_count > 0 {
+            if let Some(first_pending) = transactions.iter()
+                .find(|t| t.status == QueuedTxStatus::Pending)
+            {
+                // Emit event to open modal
+                if let (Some(broadcaster), Some(ch_id)) = (&context.broadcaster, context.channel_id) {
+                    broadcaster.broadcast(GatewayEvent::tx_queue_confirmation_required(
+                        ch_id,
+                        &first_pending.uuid,
+                        &first_pending.network,
+                        &first_pending.to,
+                        &first_pending.value,
+                        &first_pending.value_formatted,
+                    ));
+                    log::info!("[list_queued_web3_tx] Emitted tx_queue.confirmation_required for {}", first_pending.uuid);
+                }
+            }
+        }
 
         ToolResult::success(msg).with_metadata(json!({
             "count": transactions.len(),

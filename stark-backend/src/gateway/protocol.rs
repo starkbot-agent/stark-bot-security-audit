@@ -74,6 +74,10 @@ pub enum EventType {
     CronExecutionStoppedOnChannel,  // Cron job stopped on web channel
     // AI client events
     AiRetrying,  // AI API call is being retried after transient error
+    // Transaction queue confirmation events (partner mode)
+    TxQueueConfirmationRequired,  // Pending tx needs user confirmation
+    TxQueueConfirmed,             // User confirmed, tx broadcast
+    TxQueueDenied,                // User denied, tx deleted
 }
 
 impl EventType {
@@ -132,6 +136,9 @@ impl EventType {
             Self::CronExecutionStartedOnChannel => "cron.execution_started_on_channel",
             Self::CronExecutionStoppedOnChannel => "cron.execution_stopped_on_channel",
             Self::AiRetrying => "ai.retrying",
+            Self::TxQueueConfirmationRequired => "tx_queue.confirmation_required",
+            Self::TxQueueConfirmed => "tx_queue.confirmed",
+            Self::TxQueueDenied => "tx_queue.denied",
         }
     }
 }
@@ -666,6 +673,58 @@ impl GatewayEvent {
                 "tx_hash": tx_hash,
                 "network": network,
                 "status": status,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    // =====================================================
+    // Transaction Queue Confirmation Events (Partner Mode)
+    // =====================================================
+
+    /// Transaction queue confirmation required - partner mode needs user approval
+    pub fn tx_queue_confirmation_required(
+        channel_id: i64,
+        uuid: &str,
+        network: &str,
+        to: &str,
+        value: &str,
+        value_formatted: &str,
+    ) -> Self {
+        Self::new(
+            EventType::TxQueueConfirmationRequired,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "uuid": uuid,
+                "network": network,
+                "to": to,
+                "value": value,
+                "value_formatted": value_formatted,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Transaction queue confirmed - user approved, tx was broadcast
+    pub fn tx_queue_confirmed(channel_id: i64, uuid: &str, tx_hash: &str) -> Self {
+        Self::new(
+            EventType::TxQueueConfirmed,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "uuid": uuid,
+                "tx_hash": tx_hash,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Transaction queue denied - user rejected, tx was deleted
+    pub fn tx_queue_denied(channel_id: i64, uuid: &str) -> Self {
+        Self::new(
+            EventType::TxQueueDenied,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "uuid": uuid,
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         )

@@ -240,6 +240,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(Arc::clone(&db)))
             .app_data(web::Data::new(Arc::clone(&chan_mgr)))
             .app_data(web::Data::new(Arc::clone(&bcast)))
+            .app_data(web::Data::new(Arc::clone(&tx_q)))
             .wrap(Logger::default())
             .wrap(cors)
             .configure(controllers::health::config)

@@ -602,6 +602,12 @@ impl MessageDispatcher {
                     serde_json::json!(endpoints),
                 );
             }
+
+            // Add rogue_mode_enabled for partner mode transaction confirmation
+            tool_context.extra.insert(
+                "rogue_mode_enabled".to_string(),
+                serde_json::json!(bot_settings.rogue_mode_enabled),
+            );
         }
 
         // Generate response with optional tool execution loop

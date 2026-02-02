@@ -155,6 +155,31 @@ pub struct ResolvedRpcConfig {
     pub use_x402: bool,
 }
 
+/// Resolve RPC configuration using default provider
+/// Used when tool context is not available (e.g., gateway RPC methods)
+pub fn resolve_rpc_from_network(network: &str) -> ResolvedRpcConfig {
+    match resolve_rpc_config("defirelay", None, network) {
+        Some((url, use_x402)) => {
+            log::info!(
+                "[rpc_config] Resolved RPC for {} (default provider): {} (x402={})",
+                network,
+                url,
+                use_x402
+            );
+            ResolvedRpcConfig { url, use_x402 }
+        }
+        None => {
+            let url = format!("https://rpc.defirelay.com/rpc/light/{}", network);
+            log::info!(
+                "[rpc_config] Using fallback RPC for {}: {} (x402=true)",
+                network,
+                url
+            );
+            ResolvedRpcConfig { url, use_x402: true }
+        }
+    }
+}
+
 /// Extract and resolve RPC configuration from ToolContext.extra
 /// This is the canonical way to get RPC config in any tool.
 pub fn resolve_rpc_from_context(

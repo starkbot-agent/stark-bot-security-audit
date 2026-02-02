@@ -10,6 +10,7 @@ import CommandAutocomplete from '@/components/chat/CommandAutocomplete';
 import CommandMenu from '@/components/chat/CommandMenu';
 import TransactionTracker from '@/components/chat/TransactionTracker';
 import { ConfirmationPrompt } from '@/components/chat/ConfirmationPrompt';
+import TxQueueConfirmationModal, { TxQueueTransaction } from '@/components/chat/TxQueueConfirmationModal';
 import SubagentBadge from '@/components/chat/SubagentBadge';
 import { Subagent, SubagentStatus } from '@/lib/subagent-types';
 import { useGateway } from '@/hooks/useGateway';
@@ -88,6 +89,7 @@ export default function AgentChat() {
   const [copied, setCopied] = useState(false);
   const [trackedTxs, setTrackedTxs] = useState<TrackedTransaction[]>([]);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
+  const [txQueueConfirmation, setTxQueueConfirmation] = useState<TxQueueTransaction | null>(null);
   const [subagents, setSubagents] = useState<Subagent[]>([]);
   const [plannerTasks, setPlannerTasks] = useState<PlannerTask[]>([]);
   const [cronExecutionActive, setCronExecutionActive] = useState<{
@@ -639,6 +641,50 @@ export default function AgentChat() {
       off('confirmation.required', handleConfirmationRequired);
       off('confirmation.approved', handleConfirmationApproved);
       off('confirmation.rejected', handleConfirmationRejected);
+    };
+  }, [on, off]);
+
+  // Listen for tx_queue confirmation events (partner mode)
+  useEffect(() => {
+    const handleTxQueueConfirmationRequired = (data: unknown) => {
+      if (!isWebChannelEvent(data)) return;
+
+      const event = data as {
+        channel_id: number;
+        uuid: string;
+        network: string;
+        to: string;
+        value: string;
+        value_formatted: string;
+      };
+      console.log('[TxQueue] Confirmation required:', event.uuid);
+
+      // Only handle if it's for the web channel
+      if (event.channel_id === WEB_CHANNEL_ID) {
+        setTxQueueConfirmation({
+          uuid: event.uuid,
+          network: event.network,
+          to: event.to,
+          value: event.value,
+          value_formatted: event.value_formatted,
+        });
+      }
+    };
+
+    const handleTxQueueResolved = (data: unknown) => {
+      if (!isWebChannelEvent(data)) return;
+      console.log('[TxQueue] Transaction resolved');
+      setTxQueueConfirmation(null);
+    };
+
+    on('tx_queue.confirmation_required', handleTxQueueConfirmationRequired);
+    on('tx_queue.confirmed', handleTxQueueResolved);
+    on('tx_queue.denied', handleTxQueueResolved);
+
+    return () => {
+      off('tx_queue.confirmation_required', handleTxQueueConfirmationRequired);
+      off('tx_queue.confirmed', handleTxQueueResolved);
+      off('tx_queue.denied', handleTxQueueResolved);
     };
   }, [on, off]);
 
@@ -1433,6 +1479,14 @@ export default function AgentChat() {
           />
         </div>
       )}
+
+      {/* Transaction Queue Confirmation Modal (Partner Mode) */}
+      <TxQueueConfirmationModal
+        isOpen={txQueueConfirmation !== null}
+        onClose={() => setTxQueueConfirmation(null)}
+        channelId={WEB_CHANNEL_ID}
+        transaction={txQueueConfirmation}
+      />
 
       {/* Input */}
       <div className="px-6 pb-6">

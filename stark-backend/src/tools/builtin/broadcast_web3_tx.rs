@@ -83,6 +83,21 @@ impl Tool for BroadcastWeb3TxTool {
             Err(e) => return ToolResult::error(format!("Invalid parameters: {}", e)),
         };
 
+        // Check rogue mode from bot settings in ToolContext
+        let is_rogue_mode = context.extra
+            .get("rogue_mode_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if !is_rogue_mode {
+            return ToolResult::error(
+                "PARTNER MODE ACTIVE - Direct broadcasting is disabled.\n\n\
+                Transactions must be confirmed by the user.\n\
+                Use list_queued_web3_tx to view pending transactions.\n\
+                The user will be prompted to confirm or deny via the interface."
+            );
+        }
+
         // Get tx_queue
         let tx_queue = match &context.tx_queue {
             Some(q) => q,

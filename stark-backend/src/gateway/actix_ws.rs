@@ -7,6 +7,7 @@ use crate::db::Database;
 use crate::gateway::events::EventBroadcaster;
 use crate::gateway::methods;
 use crate::gateway::protocol::{ChannelIdParams, RpcError, RpcRequest, RpcResponse};
+use crate::tx_queue::TxQueueManager;
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_ws::AggregatedMessage;
 use futures_util::StreamExt;
@@ -31,6 +32,7 @@ pub async fn ws_handler(
     db: web::Data<Arc<Database>>,
     channel_manager: web::Data<Arc<ChannelManager>>,
     broadcaster: web::Data<Arc<EventBroadcaster>>,
+    tx_queue: web::Data<Arc<TxQueueManager>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, session, msg_stream) = actix_ws::handle(&req, stream)?;
 
@@ -38,6 +40,7 @@ pub async fn ws_handler(
     let db = db.get_ref().clone();
     let channel_manager = channel_manager.get_ref().clone();
     let broadcaster = broadcaster.get_ref().clone();
+    let tx_queue = tx_queue.get_ref().clone();
 
     actix_web::rt::spawn(handle_ws_connection(
         session,
@@ -45,6 +48,7 @@ pub async fn ws_handler(
         db,
         channel_manager,
         broadcaster,
+        tx_queue,
     ));
 
     Ok(response)
@@ -56,6 +60,7 @@ async fn handle_ws_connection(
     db: Arc<Database>,
     channel_manager: Arc<ChannelManager>,
     broadcaster: Arc<EventBroadcaster>,
+    tx_queue: Arc<TxQueueManager>,
 ) {
     log::info!("New Actix WebSocket connection");
 
@@ -154,7 +159,7 @@ async fn handle_ws_connection(
         match msg_result {
             Ok(AggregatedMessage::Text(text)) => {
                 log::debug!("[DATAGRAM] <<< FROM AGENT (RPC request):\n{}", text);
-                let response = process_request(&text, &db, &channel_manager, &broadcaster).await;
+                let response = process_request(&text, &db, &channel_manager, &broadcaster, &tx_queue).await;
                 if let Ok(json) = serde_json::to_string(&response) {
                     let _ = tx.send(json).await;
                 }
@@ -304,6 +309,7 @@ async fn process_request(
     db: &Arc<Database>,
     channel_manager: &Arc<ChannelManager>,
     broadcaster: &Arc<EventBroadcaster>,
+    tx_queue: &Arc<TxQueueManager>,
 ) -> RpcResponse {
     let request: RpcRequest = match serde_json::from_str(text) {
         Ok(req) => req,
@@ -314,7 +320,7 @@ async fn process_request(
 
     let id = request.id.clone();
 
-    let result = dispatch_method(&request, db, channel_manager, broadcaster).await;
+    let result = dispatch_method(&request, db, channel_manager, broadcaster, tx_queue).await;
 
     match result {
         Ok(value) => RpcResponse::success(id, value),
@@ -327,6 +333,7 @@ async fn dispatch_method(
     db: &Arc<Database>,
     channel_manager: &Arc<ChannelManager>,
     broadcaster: &Arc<EventBroadcaster>,
+    tx_queue: &Arc<TxQueueManager>,
 ) -> Result<serde_json::Value, RpcError> {
     match request.method.as_str() {
         "ping" => methods::handle_ping().await,
@@ -348,6 +355,16 @@ async fn dispatch_method(
             let params: ChannelIdParams = serde_json::from_value(request.params.clone())
                 .map_err(|e| RpcError::invalid_params(format!("Invalid params: {}", e)))?;
             methods::handle_channels_restart(params, db.clone(), channel_manager.clone()).await
+        }
+        "tx_queue.confirm" => {
+            let params: methods::TxQueueParams = serde_json::from_value(request.params.clone())
+                .map_err(|e| RpcError::invalid_params(format!("Invalid params: {}", e)))?;
+            methods::handle_tx_queue_confirm(params, tx_queue.clone(), broadcaster.clone()).await
+        }
+        "tx_queue.deny" => {
+            let params: methods::TxQueueParams = serde_json::from_value(request.params.clone())
+                .map_err(|e| RpcError::invalid_params(format!("Invalid params: {}", e)))?;
+            methods::handle_tx_queue_deny(params, tx_queue.clone(), broadcaster.clone()).await
         }
         _ => Err(RpcError::method_not_found()),
     }

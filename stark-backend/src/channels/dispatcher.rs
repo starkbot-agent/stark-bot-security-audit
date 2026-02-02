@@ -1745,15 +1745,14 @@ impl MessageDispatcher {
                                 user_question_content = result.content.clone();
                                 log::info!("[ORCHESTRATED_LOOP] Tool requires user response, will break after processing");
                             }
-                            // Check if task_fully_completed was called - agent signals it's done
-                            // CRITICAL: This tool MUST stop the loop immediately to prevent infinite iteration
+                            // Check if task_fully_completed was called - agent signals current task is done
                             if metadata.get("task_fully_completed").and_then(|v| v.as_bool()).unwrap_or(false) {
                                 let summary = metadata.get("summary")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or(&result.content)
                                     .to_string();
 
-                                log::info!("[ORCHESTRATED_LOOP] task_fully_completed called, stopping loop");
+                                log::info!("[ORCHESTRATED_LOOP] task_fully_completed called");
 
                                 // Mark current task as completed and broadcast (if task queue exists)
                                 if let Some(completed_task_id) = orchestrator.complete_current_task() {
@@ -1766,18 +1765,36 @@ impl MessageDispatcher {
                                     );
                                 }
 
-                                // ALWAYS stop the loop when task_fully_completed is called
-                                // The agent explicitly signaled it's done - respect that signal
-                                orchestrator_complete = true;
-                                final_summary = summary.clone();
+                                // Check if there are more tasks to process
+                                if let Some(next_task) = orchestrator.pop_next_task() {
+                                    // More tasks remain - continue the loop with the next task
+                                    log::info!(
+                                        "[ORCHESTRATED_LOOP] Starting next task: {} - {}",
+                                        next_task.id,
+                                        next_task.description
+                                    );
+                                    self.broadcast_task_status_change(
+                                        original_message.channel_id,
+                                        next_task.id,
+                                        "in_progress",
+                                        &next_task.description,
+                                    );
+                                    self.broadcast_task_queue_update(original_message.channel_id, orchestrator);
+                                    // DO NOT set orchestrator_complete - continue the loop
+                                } else {
+                                    // No more tasks - now we can end the session
+                                    log::info!("[ORCHESTRATED_LOOP] All tasks completed, stopping loop");
+                                    orchestrator_complete = true;
+                                    final_summary = summary.clone();
 
-                                // Mark session as complete in database
-                                if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Complete) {
-                                    log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
+                                    // Mark session as complete in database
+                                    if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Complete) {
+                                        log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
+                                    }
+
+                                    // Broadcast session complete event
+                                    self.broadcast_session_complete(original_message.channel_id, session_id);
                                 }
-
-                                // Broadcast session complete event
-                                self.broadcast_session_complete(original_message.channel_id, session_id);
                             }
                         }
 

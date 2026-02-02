@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Default max tool iterations
-pub const DEFAULT_MAX_TOOL_ITERATIONS: i32 = 50;
+pub const DEFAULT_MAX_TOOL_ITERATIONS: i32 = 100;
 
 /// Bot settings stored in database
 #[derive(Debug, Clone, Serialize, Deserialize)]

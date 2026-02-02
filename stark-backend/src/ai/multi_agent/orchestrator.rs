@@ -6,7 +6,7 @@ use crate::tools::ToolDefinition;
 use serde_json::Value;
 
 /// Maximum iterations before forcing completion
-const MAX_ITERATIONS: u32 = 50;
+const MAX_ITERATIONS: u32 = 100;
 
 /// The orchestrator manages agent context and tool processing
 pub struct Orchestrator {

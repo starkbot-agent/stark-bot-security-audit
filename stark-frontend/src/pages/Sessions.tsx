@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Calendar, Trash2, MessageSquare, Download, ChevronLeft, User, Bot, Wrench, CheckCircle, XCircle, AlertCircle, Play, Pause } from 'lucide-react';
+import { Calendar, Trash2, MessageSquare, Download, ChevronLeft, User, Bot, Wrench, CheckCircle, XCircle, AlertCircle, Play, Pause, RefreshCw } from 'lucide-react';
 import Card, { CardContent } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import { getSessions, deleteSession, getSessionTranscript, SessionMessage, getCronJobs, CronJobInfo, stopSession, resumeSession } from '@/lib/api';
@@ -44,10 +44,28 @@ export default function Sessions() {
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
     loadSessions();
   }, []);
+
+  // Polling for new messages when viewing a session
+  useEffect(() => {
+    if (!selectedSession) return;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const transcript = await getSessionTranscript(selectedSession.id);
+        setMessages(transcript.messages);
+      } catch (err) {
+        // Silently fail on poll errors to avoid spamming the user
+        console.error('Poll refresh failed:', err);
+      }
+    }, 5000);
+
+    return () => clearInterval(pollInterval);
+  }, [selectedSession]);
 
   const loadSessions = async () => {
     try {
@@ -85,6 +103,19 @@ export default function Sessions() {
       setMessages([]);
     } finally {
       setIsLoadingMessages(false);
+    }
+  };
+
+  const refreshTranscript = async () => {
+    if (!selectedSession || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      const transcript = await getSessionTranscript(selectedSession.id);
+      setMessages(transcript.messages);
+    } catch (err) {
+      setError('Failed to refresh messages');
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -275,6 +306,16 @@ export default function Sessions() {
               </p>
             </div>
             <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={refreshTranscript}
+                disabled={isRefreshing}
+                title="Refresh messages (auto-refreshes every 5s)"
+              >
+                <RefreshCw className={`w-4 h-4 sm:mr-1 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">Refresh</span>
+              </Button>
               <Button
                 variant="secondary"
                 size="sm"

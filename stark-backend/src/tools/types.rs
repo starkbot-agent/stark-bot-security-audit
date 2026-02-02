@@ -330,6 +330,9 @@ pub struct ToolContext {
     /// Register store for passing data between tools safely
     /// This prevents hallucination of critical data (like tx params)
     pub registers: RegisterStore,
+    /// Context bank for key terms extracted from user input
+    /// Contains ETH addresses, token symbols, etc. found in the original query
+    pub context_bank: crate::tools::ContextBank,
     /// Database access for tools that need it (memory tools, etc.)
     pub database: Option<Arc<Database>>,
     /// SubAgent manager for spawning and managing sub-agents
@@ -354,6 +357,7 @@ impl std::fmt::Debug for ToolContext {
             .field("extra", &self.extra)
             .field("broadcaster", &self.broadcaster.is_some())
             .field("registers", &self.registers.keys())
+            .field("context_bank", &self.context_bank.len())
             .field("database", &self.database.is_some())
             .field("subagent_manager", &self.subagent_manager.is_some())
             .field("process_manager", &self.process_manager.is_some())
@@ -375,6 +379,7 @@ impl Default for ToolContext {
             extra: HashMap::new(),
             broadcaster: None,
             registers: RegisterStore::new(),
+            context_bank: crate::tools::ContextBank::new(),
             database: None,
             subagent_manager: None,
             process_manager: None,
@@ -491,6 +496,27 @@ impl ToolContext {
     pub fn with_tx_queue(mut self, tx_queue: Arc<TxQueueManager>) -> Self {
         self.tx_queue = Some(tx_queue);
         self
+    }
+
+    /// Populate context bank with extracted terms from user input and broadcast update
+    pub fn scan_and_set_context_bank(&mut self, text: &str) {
+        let items = crate::tools::scan_input(text);
+        if !items.is_empty() {
+            self.context_bank.add_all(items);
+
+            // Broadcast context bank update if we have a broadcaster
+            if let (Some(broadcaster), Some(channel_id)) = (&self.broadcaster, self.channel_id) {
+                broadcaster.broadcast(GatewayEvent::context_bank_update(
+                    channel_id,
+                    self.context_bank.to_json(),
+                ));
+            }
+        }
+    }
+
+    /// Get the context bank formatted for agent context
+    pub fn get_context_bank_for_agent(&self) -> Option<String> {
+        self.context_bank.format_for_agent()
     }
 
     /// Set a register value and broadcast the update to connected clients.

@@ -267,6 +267,7 @@ impl Tool for ListQueuedWeb3TxTool {
                 "to": tx.to,
                 "value": tx.value,
                 "value_formatted": tx.value_formatted,
+                "data": tx.data,
                 "tx_hash": tx.tx_hash,
                 "explorer_url": tx.explorer_url,
                 "error": tx.error,
@@ -290,9 +291,11 @@ impl Tool for ListQueuedWeb3TxTool {
                         ch_id,
                         &first_pending.uuid,
                         &first_pending.network,
+                        &first_pending.from,
                         &first_pending.to,
                         &first_pending.value,
                         &first_pending.value_formatted,
+                        &first_pending.data,
                     ));
                     log::info!("[list_queued_web3_tx] Emitted tx_queue.confirmation_required for {}", first_pending.uuid);
                 }

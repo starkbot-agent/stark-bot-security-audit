@@ -147,6 +147,8 @@ pub struct QueuedTxSummary {
     pub to: String,
     pub value: String,
     pub value_formatted: String,
+    /// Hex-encoded calldata (for function selector lookup)
+    pub data: String,
     pub status: QueuedTxStatus,
     pub tx_hash: Option<String>,
     pub explorer_url: Option<String>,
@@ -164,6 +166,7 @@ impl From<&QueuedTransaction> for QueuedTxSummary {
             to: tx.to.clone(),
             value: tx.value.clone(),
             value_formatted: tx.format_value_eth(),
+            data: tx.data.clone(),
             status: tx.status,
             tx_hash: tx.tx_hash.clone(),
             explorer_url: tx.explorer_url.clone(),

@@ -1,4 +1,5 @@
 pub mod builtin;
+pub mod context_bank;
 pub mod http_retry;
 pub mod presets;
 pub mod register;
@@ -6,6 +7,7 @@ pub mod registry;
 pub mod rpc_config;
 pub mod types;
 
+pub use context_bank::{scan_input, ContextBank, ContextBankItem};
 pub use register::{PresetOrCustom, RegisterStore};
 pub use registry::{Tool, ToolRegistry};
 pub use types::{

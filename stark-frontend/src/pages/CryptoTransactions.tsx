@@ -4,11 +4,14 @@ import Card, { CardContent } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import { useApi } from '@/hooks/useApi';
 import type { QueuedTransactionsResponse, QueuedTransactionInfo } from '@/lib/api';
+import TxQueueConfirmationModal, { TxQueueTransaction } from '@/components/chat/TxQueueConfirmationModal';
 
 type StatusFilter = 'all' | 'pending' | 'broadcast' | 'confirmed' | 'failed';
 
 export default function CryptoTransactions() {
   const [filter, setFilter] = useState<StatusFilter>('all');
+  const [selectedTx, setSelectedTx] = useState<TxQueueTransaction | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
   const statusParam = filter === 'all' ? undefined : filter;
 
   const { data, isLoading, refetch } = useApi<QueuedTransactionsResponse>(
@@ -247,7 +250,26 @@ export default function CryptoTransactions() {
                 </thead>
                 <tbody>
                   {transactions.map((tx) => (
-                    <tr key={tx.uuid} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                    <tr
+                      key={tx.uuid}
+                      className={`border-b border-slate-700/50 hover:bg-slate-700/30 ${
+                        tx.status === 'pending' ? 'cursor-pointer' : ''
+                      }`}
+                      onClick={() => {
+                        if (tx.status === 'pending') {
+                          setSelectedTx({
+                            uuid: tx.uuid,
+                            network: tx.network,
+                            from: tx.from,
+                            to: tx.to,
+                            value: tx.value,
+                            value_formatted: tx.value_formatted,
+                            data: tx.data
+                          });
+                          setIsModalOpen(true);
+                        }
+                      }}
+                    >
                       <td className="py-3 px-4 text-slate-300 text-sm">
                         {formatDate(tx.created_at)}
                       </td>
@@ -306,7 +328,20 @@ export default function CryptoTransactions() {
         <p>Transactions are queued when using <code className="bg-slate-700 px-1 rounded">web3_tx</code>.</p>
         <p>Use <code className="bg-slate-700 px-1 rounded">broadcast_web3_tx</code> to broadcast pending transactions.</p>
         <p>Use <code className="bg-slate-700 px-1 rounded">list_queued_web3_tx</code> to view transactions in chat.</p>
+        <p className="mt-2">Click on a pending transaction row to confirm or deny it.</p>
       </div>
+
+      {/* Transaction Confirmation Modal */}
+      <TxQueueConfirmationModal
+        isOpen={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          setSelectedTx(null);
+          refetch();
+        }}
+        channelId={0}
+        transaction={selectedTx}
+      />
     </div>
   );
 }

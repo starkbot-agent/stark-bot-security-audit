@@ -1,47 +1,25 @@
-// Network configuration
-// Maps network names to their chain IDs and other metadata
+// Network configuration for context bank scanning
+// Maps network identifiers to their display names and chain IDs
 
 {
     "base": (
-        chain_id: 8453,
         name: "Base",
-        native_token: "ETH",
-        explorer: "https://basescan.org",
+        chain_id: 8453,
+        aliases: ["base mainnet", "base chain"],
     ),
     "mainnet": (
-        chain_id: 1,
         name: "Ethereum Mainnet",
-        native_token: "ETH",
-        explorer: "https://etherscan.io",
-    ),
-    "arbitrum": (
-        chain_id: 42161,
-        name: "Arbitrum One",
-        native_token: "ETH",
-        explorer: "https://arbiscan.io",
-    ),
-    "optimism": (
-        chain_id: 10,
-        name: "Optimism",
-        native_token: "ETH",
-        explorer: "https://optimistic.etherscan.io",
-    ),
-    "polygon": (
-        chain_id: 137,
-        name: "Polygon",
-        native_token: "MATIC",
-        explorer: "https://polygonscan.com",
+        chain_id: 1,
+        aliases: ["ethereum", "eth mainnet", "ethereum mainnet", "eth"],
     ),
     "sepolia": (
-        chain_id: 11155111,
         name: "Sepolia Testnet",
-        native_token: "ETH",
-        explorer: "https://sepolia.etherscan.io",
+        chain_id: 11155111,
+        aliases: ["sepolia testnet"],
     ),
     "base-sepolia": (
+        name: "Base Sepolia",
         chain_id: 84532,
-        name: "Base Sepolia Testnet",
-        native_token: "ETH",
-        explorer: "https://sepolia.basescan.org",
+        aliases: ["base sepolia testnet"],
     ),
 }

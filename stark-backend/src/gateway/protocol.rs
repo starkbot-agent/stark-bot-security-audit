@@ -44,6 +44,8 @@ pub enum EventType {
     TxConfirmed,
     // Register events
     RegisterUpdate,
+    // Context bank events
+    ContextBankUpdate,
     // Multi-agent task events
     AgentTasksUpdate,
     AgentToolsetUpdate,  // Current tools available to agent
@@ -113,6 +115,7 @@ impl EventType {
             Self::TxPending => "tx.pending",
             Self::TxConfirmed => "tx.confirmed",
             Self::RegisterUpdate => "register.update",
+            Self::ContextBankUpdate => "context_bank.update",
             Self::AgentTasksUpdate => "agent.tasks_update",
             Self::AgentToolsetUpdate => "agent.toolset_update",
             Self::SubagentSpawned => "subagent.spawned",
@@ -687,9 +690,11 @@ impl GatewayEvent {
         channel_id: i64,
         uuid: &str,
         network: &str,
+        from: &str,
         to: &str,
         value: &str,
         value_formatted: &str,
+        data: &str,
     ) -> Self {
         Self::new(
             EventType::TxQueueConfirmationRequired,
@@ -697,9 +702,11 @@ impl GatewayEvent {
                 "channel_id": channel_id,
                 "uuid": uuid,
                 "network": network,
+                "from": from,
                 "to": to,
                 "value": value,
                 "value_formatted": value_formatted,
+                "data": data,
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         )
@@ -763,6 +770,21 @@ impl GatewayEvent {
             serde_json::json!({
                 "channel_id": channel_id,
                 "registers": registers,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Context bank updated - key terms extracted from user input
+    pub fn context_bank_update(
+        channel_id: i64,
+        context_bank: Value,
+    ) -> Self {
+        Self::new(
+            EventType::ContextBankUpdate,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "context_bank": context_bank,
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         )

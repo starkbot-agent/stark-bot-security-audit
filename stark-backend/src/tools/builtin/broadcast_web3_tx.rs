@@ -90,12 +90,52 @@ impl Tool for BroadcastWeb3TxTool {
             .unwrap_or(false);
 
         if !is_rogue_mode {
-            return ToolResult::error(
-                "PARTNER MODE ACTIVE - Direct broadcasting is disabled.\n\n\
-                Transactions must be confirmed by the user.\n\
-                Use list_queued_web3_tx to view pending transactions.\n\
-                The user will be prompted to confirm or deny via the interface."
-            );
+            // Partner mode: trigger confirmation modal instead of broadcasting
+            let tx_queue = match &context.tx_queue {
+                Some(q) => q,
+                None => return ToolResult::error("Transaction queue not available. Contact administrator."),
+            };
+
+            // Get the transaction to show in the modal
+            let queued_tx = match tx_queue.get(&params.uuid) {
+                Some(tx) => tx,
+                None => return ToolResult::error(format!(
+                    "Transaction with UUID '{}' not found. Use list_queued_web3_tx to see available transactions.",
+                    params.uuid
+                )),
+            };
+
+            // Emit event to open confirmation modal
+            if let (Some(broadcaster), Some(ch_id)) = (&context.broadcaster, context.channel_id) {
+                broadcaster.broadcast(GatewayEvent::tx_queue_confirmation_required(
+                    ch_id,
+                    &queued_tx.uuid,
+                    &queued_tx.network,
+                    &queued_tx.from,
+                    &queued_tx.to,
+                    &queued_tx.value,
+                    &queued_tx.format_value_eth(),
+                    &queued_tx.data,
+                ));
+                log::info!("[broadcast_web3_tx] Partner mode: emitted tx_queue.confirmation_required for {}", queued_tx.uuid);
+            }
+
+            return ToolResult::success(format!(
+                "PARTNER MODE - Transaction queued for user confirmation.\n\n\
+                UUID: {}\n\
+                Network: {}\n\
+                To: {}\n\
+                Value: {}\n\n\
+                The user will be prompted to confirm or deny this transaction.",
+                queued_tx.uuid, queued_tx.network, queued_tx.to, queued_tx.format_value_eth()
+            )).with_metadata(json!({
+                "uuid": queued_tx.uuid,
+                "status": "awaiting_confirmation",
+                "network": queued_tx.network,
+                "to": queued_tx.to,
+                "value": queued_tx.value,
+                "value_formatted": queued_tx.format_value_eth()
+            }));
         }
 
         // Get tx_queue

@@ -82,6 +82,8 @@ async fn main() -> std::io::Result<()> {
     tools::presets::load_presets(config_dir);
     log::info!("Loading token configs from config directory");
     tools::builtin::token_lookup::load_tokens(config_dir);
+    log::info!("Loading network configs from config directory");
+    tools::builtin::network_lookup::load_networks(config_dir);
     log::info!("Loading RPC provider configs from config directory");
     tools::rpc_config::load_rpc_providers(config_dir);
 

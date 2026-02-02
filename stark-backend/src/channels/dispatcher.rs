@@ -473,6 +473,23 @@ impl MessageDispatcher {
             });
         }
 
+        // Scan user input for key terms (ETH addresses, token symbols) for context bank
+        let context_bank_items = crate::tools::scan_input(message_text);
+        if !context_bank_items.is_empty() {
+            // Create a temporary context bank for formatting
+            let temp_bank = crate::tools::ContextBank::new();
+            temp_bank.add_all(context_bank_items.clone());
+            if let Some(context_bank_text) = temp_bank.format_for_agent() {
+                messages.push(Message {
+                    role: MessageRole::System,
+                    content: format!(
+                        "## Context Bank\nThe following key terms were detected in the user's input: {}",
+                        context_bank_text
+                    ),
+                });
+            }
+        }
+
         // Add conversation history (skip the last one since it's the current message)
         // Also skip tool calls and results as they're not part of the AI conversation format
         for msg in history.iter().take(history.len().saturating_sub(1)) {
@@ -544,6 +561,23 @@ impl MessageDispatcher {
         if let Some(ref tx_queue) = self.tx_queue {
             tool_context = tool_context.with_tx_queue(tx_queue.clone());
             log::debug!("[DISPATCH] TxQueueManager attached to tool context");
+        }
+
+        // Populate tool context with the context bank items scanned earlier
+        if !context_bank_items.is_empty() {
+            tool_context.context_bank.add_all(context_bank_items.clone());
+            log::info!(
+                "[DISPATCH] Context bank populated with {} items: {:?}",
+                tool_context.context_bank.len(),
+                tool_context.get_context_bank_for_agent()
+            );
+            // Broadcast context bank update to frontend
+            if let Some(channel_id) = tool_context.channel_id {
+                self.broadcaster.broadcast(GatewayEvent::context_bank_update(
+                    channel_id,
+                    tool_context.context_bank.to_json(),
+                ));
+            }
         }
 
         // Ensure workspace directory exists

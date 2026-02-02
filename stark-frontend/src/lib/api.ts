@@ -1252,6 +1252,8 @@ export interface QueuedTransactionInfo {
   to: string;
   value: string;
   value_formatted: string;
+  /** Hex-encoded calldata for function selector lookup */
+  data: string;
   status: 'pending' | 'broadcasting' | 'broadcast' | 'confirmed' | 'failed' | 'expired';
   tx_hash?: string;
   explorer_url?: string;

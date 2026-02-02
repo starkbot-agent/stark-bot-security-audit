@@ -56,6 +56,29 @@ fn get_tokens() -> &'static HashMap<String, HashMap<String, TokenInfo>> {
     TOKENS.get().expect("[tokens] Token config not loaded - call load_tokens() first")
 }
 
+/// Get all token symbols with their names (for context bank scanning)
+/// Returns a list of (symbol, name) pairs from all networks
+pub fn get_all_token_symbols() -> Vec<(String, String)> {
+    let tokens = match TOKENS.get() {
+        Some(t) => t,
+        None => return Vec::new(), // Return empty if tokens not loaded yet
+    };
+
+    let mut symbols = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for network_tokens in tokens.values() {
+        for (symbol, info) in network_tokens {
+            // Avoid duplicates (same symbol on different networks)
+            if symbols.insert(symbol.to_uppercase()) {
+                result.push((symbol.clone(), info.name.clone()));
+            }
+        }
+    }
+
+    result
+}
+
 /// Token Lookup tool
 pub struct TokenLookupTool {
     definition: ToolDefinition,

@@ -647,27 +647,39 @@ export default function AgentChat() {
   // Listen for tx_queue confirmation events (partner mode)
   useEffect(() => {
     const handleTxQueueConfirmationRequired = (data: unknown) => {
-      if (!isWebChannelEvent(data)) return;
+      console.log('[TxQueue] RAW event received:', data);
+
+      if (!isWebChannelEvent(data)) {
+        console.log('[TxQueue] Event filtered out by isWebChannelEvent');
+        return;
+      }
 
       const event = data as {
         channel_id: number;
         uuid: string;
         network: string;
+        from?: string;
         to: string;
         value: string;
         value_formatted: string;
+        data?: string;
       };
-      console.log('[TxQueue] Confirmation required:', event.uuid);
+      console.log('[TxQueue] Confirmation required:', event.uuid, 'channel_id:', event.channel_id);
 
       // Only handle if it's for the web channel
       if (event.channel_id === WEB_CHANNEL_ID) {
+        console.log('[TxQueue] Setting txQueueConfirmation state');
         setTxQueueConfirmation({
           uuid: event.uuid,
           network: event.network,
+          from: event.from,
           to: event.to,
           value: event.value,
           value_formatted: event.value_formatted,
+          data: event.data,
         });
+      } else {
+        console.log('[TxQueue] Wrong channel_id, expected', WEB_CHANNEL_ID, 'got', event.channel_id);
       }
     };
 
@@ -1487,6 +1499,31 @@ export default function AgentChat() {
         channelId={WEB_CHANNEL_ID}
         transaction={txQueueConfirmation}
       />
+
+      {/* Pending Transaction Indicator Bar (Partner Mode) */}
+      {txQueueConfirmation && (
+        <div className="mx-6 mb-2 p-3 bg-amber-500/10 border border-amber-500/50 rounded-lg">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="w-2 h-2 bg-amber-400 rounded-full animate-pulse flex-shrink-0" />
+              <span className="text-amber-400 font-medium">1 pending transaction</span>
+              <span className="text-slate-400 text-sm">- {txQueueConfirmation.value_formatted} to</span>
+              <a
+                href={txQueueConfirmation.network === 'mainnet'
+                  ? `https://etherscan.io/address/${txQueueConfirmation.to}`
+                  : `https://basescan.org/address/${txQueueConfirmation.to}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-cyan-400 hover:text-cyan-300 font-mono text-xs"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {txQueueConfirmation.to}
+              </a>
+            </div>
+            <span className="text-amber-400 text-sm">Confirm or deny in modal above</span>
+          </div>
+        </div>
+      )}
 
       {/* Input */}
       <div className="px-6 pb-6">

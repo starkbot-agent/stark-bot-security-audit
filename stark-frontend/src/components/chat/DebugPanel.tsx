@@ -143,10 +143,23 @@ interface AgentToolsetState {
   timestamp: string;
 }
 
+interface ContextBankItem {
+  value: string;
+  item_type: string;
+  label?: string;
+}
+
+interface ContextBankState {
+  items: ContextBankItem[];
+  count: number;
+  formatted?: string;
+}
+
 export default function DebugPanel({ className }: DebugPanelProps) {
   const [executions, setExecutions] = useState<Map<string, DebugTask>>(new Map());
   const [payments, setPayments] = useState<X402PaymentEvent[]>([]);
   const [registers, setRegisters] = useState<Record<string, RegisterEntry>>({});
+  const [contextBank, setContextBank] = useState<ContextBankState | null>(null);
   const [agentTasks, setAgentTasks] = useState<AgentTasksState | null>(null);
   const [agentToolset, setAgentToolset] = useState<AgentToolsetState | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -399,6 +412,11 @@ export default function DebugPanel({ className }: DebugPanelProps) {
     setRegisters(event.registers || {});
   }, []);
 
+  const handleContextBankUpdate = useCallback((data: unknown) => {
+    const event = data as { context_bank: ContextBankState };
+    setContextBank(event.context_bank || null);
+  }, []);
+
   const handleAgentTasksUpdate = useCallback((data: unknown) => {
     const event = data as {
       mode: string;
@@ -442,6 +460,7 @@ export default function DebugPanel({ className }: DebugPanelProps) {
     on('tool.result', handleToolResult);
     on('x402.payment', handleX402Payment);
     on('register.update', handleRegisterUpdate);
+    on('context_bank.update', handleContextBankUpdate);
     on('agent.tasks_update', handleAgentTasksUpdate);
     on('agent.toolset_update', handleAgentToolsetUpdate);
 
@@ -456,10 +475,11 @@ export default function DebugPanel({ className }: DebugPanelProps) {
       off('tool.result', handleToolResult);
       off('x402.payment', handleX402Payment);
       off('register.update', handleRegisterUpdate);
+      off('context_bank.update', handleContextBankUpdate);
       off('agent.tasks_update', handleAgentTasksUpdate);
       off('agent.toolset_update', handleAgentToolsetUpdate);
     };
-  }, [on, off, handleExecutionStarted, handleExecutionThinking, handleTaskStarted, handleTaskUpdated, handleTaskCompleted, handleExecutionCompleted, handleToolExecution, handleToolResult, handleX402Payment, handleRegisterUpdate, handleAgentTasksUpdate, handleAgentToolsetUpdate]);
+  }, [on, off, handleExecutionStarted, handleExecutionThinking, handleTaskStarted, handleTaskUpdated, handleTaskCompleted, handleExecutionCompleted, handleToolExecution, handleToolResult, handleX402Payment, handleRegisterUpdate, handleContextBankUpdate, handleAgentTasksUpdate, handleAgentToolsetUpdate]);
 
   const toggleCollapse = (taskId: string) => {
     setCollapsed((prev) => {
@@ -846,14 +866,54 @@ export default function DebugPanel({ className }: DebugPanelProps) {
         )}
 
         {activeTab === 'registry' && (
-          <div className="p-2">
-            {Object.keys(registers).length === 0 ? (
+          <div className="p-2 space-y-4">
+            {/* Context Bank Section */}
+            {contextBank && contextBank.items.length > 0 && (
+              <div className="p-3 bg-gradient-to-r from-amber-500/10 to-orange-500/10 rounded-lg border border-amber-500/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-amber-400 text-sm font-semibold">Context Bank</span>
+                  <span className="text-xs text-slate-500">
+                    {contextBank.count} term{contextBank.count !== 1 ? 's' : ''} detected
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {contextBank.items.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className="px-2 py-1 bg-slate-800 rounded text-xs font-mono flex items-center gap-1"
+                    >
+                      <span className={
+                        item.item_type === 'eth_address'
+                          ? 'text-cyan-400'
+                          : item.item_type === 'network'
+                          ? 'text-green-400'
+                          : 'text-amber-400'
+                      }>
+                        {item.item_type === 'eth_address'
+                          ? `${item.value.slice(0, 6)}...${item.value.slice(-4)}`
+                          : item.value
+                        }
+                      </span>
+                      {item.label && (
+                        <span className="text-slate-500">({item.label})</span>
+                      )}
+                      <span className="text-slate-600 text-[10px]">
+                        {item.item_type === 'eth_address' ? '📍' : item.item_type === 'network' ? '🌐' : '🪙'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Registers Section */}
+            {Object.keys(registers).length === 0 && (!contextBank || contextBank.items.length === 0) ? (
               <div className="text-center text-slate-500 py-8">
                 <Database className="w-8 h-8 mx-auto mb-2 opacity-50" />
                 <p>No registers set</p>
                 <p className="text-xs mt-1">Registers store data passed between tools</p>
               </div>
-            ) : (
+            ) : Object.keys(registers).length > 0 && (
               <div className="space-y-2">
                 {Object.entries(registers).map(([key, entry]) => (
                   <div

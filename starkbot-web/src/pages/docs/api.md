@@ -274,13 +274,74 @@ GET /api/tools
 {
   "tools": [
     {
-      "name": "web_search",
-      "description": "Search the web",
+      "name": "web_fetch",
+      "description": "Fetch web content",
       "group": "web",
-      "parameters": { "query": "string" }
+      "enabled": true
     }
   ]
 }
+```
+
+### List Tool Groups
+
+```http
+GET /api/tool_groups
+```
+
+**Response:**
+```json
+{
+  "groups": [
+    { "key": "system", "label": "System Tools" },
+    { "key": "finance", "label": "Finance/DeFi Tools" },
+    { "key": "development", "label": "Development Tools" }
+  ]
+}
+```
+
+---
+
+## Transaction Queue
+
+### List Queued Transactions
+
+```http
+GET /api/tx_queue
+```
+
+### Approve Transaction
+
+```http
+POST /api/tx_queue/:id/approve
+```
+
+### Reject Transaction
+
+```http
+POST /api/tx_queue/:id/reject
+```
+
+---
+
+## EIP-8004 (Agent Identity)
+
+### Get Config
+
+```http
+GET /api/eip8004/config
+```
+
+### Get Identity
+
+```http
+GET /api/eip8004/identity
+```
+
+### Discover Agents
+
+```http
+GET /api/eip8004/agents
 ```
 
 ---
@@ -358,8 +419,16 @@ Connect to `ws://localhost:8081` (or `wss://` in production).
 | `agent.tool_call` | `{ tool, parameters }` |
 | `tool.result` | `{ tool, success, result }` |
 | `agent.thinking` | `{ message }` |
+| `agent.subtype_changed` | `{ subtype, label, emoji }` |
+| `task.defined` | `{ tasks: [...] }` |
+| `task.started` | `{ task_id, description }` |
+| `task.completed` | `{ task_id, summary }` |
+| `tx.queued` | `{ id, to, value, network }` |
 | `tx.pending` | `{ hash, to, value }` |
-| `tx.confirmed` | `{ hash, status }` |
+| `tx.confirmed` | `{ hash, status, gas_used }` |
+| `x402.payment` | `{ amount, asset, pay_to }` |
+| `context_bank.update` | `{ items: [...] }` |
+| `register.update` | `{ key, value, source }` |
 | `confirmation.required` | `{ id, action, params }` |
 
 ---

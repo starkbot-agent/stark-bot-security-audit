@@ -46,8 +46,20 @@ When asked about weather:
 | `description` | string | When to use this skill |
 | `arguments` | array | Parameters the skill accepts |
 | `tools` | array | Tools the skill can access |
+| `requires_tools` | array | Tools that MUST be available (force-included) |
 | `version` | string | Skill version (optional) |
-| `tags` | array | Categorization tags (optional) |
+| `tags` | array | Categorization tags for subtype filtering |
+
+### Skill Tags
+
+Tags determine which agent subtypes can use a skill:
+
+| Tags | Available To |
+|------|-------------|
+| `general`, `all` | All subtypes |
+| `crypto`, `defi`, `transfer`, `swap`, `finance`, `wallet`, `token` | Finance |
+| `development`, `git`, `testing`, `debugging`, `review`, `code`, `github` | CodeEngineer |
+| `social`, `marketing`, `messaging`, `moltx`, `scheduling` | Secretary |
 
 ### Arguments
 
@@ -162,6 +174,8 @@ tools:
 ---
 name: daily-summary
 description: Generate daily activity summary
+tags:
+  - general
 tools:
   - agent_send
 ---
@@ -176,6 +190,67 @@ Generate a summary covering:
 4. Notable events or errors
 
 Format as bullet points. If a channel is specified, send the summary there.
+```
+
+### Token Transfer Skill (Finance)
+
+```markdown
+---
+name: transfer
+description: Transfer tokens to an address
+tags:
+  - crypto
+  - transfer
+  - finance
+requires_tools:
+  - token_lookup
+  - web3_function_call
+  - web3_tx
+---
+
+# Token Transfer Skill
+
+## Steps
+1. Look up token address with `token_lookup`
+2. Check user's balance with `web3_function_call` (preset: erc20_balance)
+3. Build transfer transaction with `web3_tx`
+4. Transaction will be queued for user approval
+5. Once approved, broadcast with `broadcast_web3_tx`
+
+## Important
+- Always confirm recipient address with user
+- Show token balance before transfer
+- Wait for user approval before broadcasting
+```
+
+### Swap Skill (Finance)
+
+```markdown
+---
+name: swap
+description: Swap tokens using DEX
+tags:
+  - crypto
+  - defi
+  - swap
+requires_tools:
+  - token_lookup
+  - x402_rpc
+  - web3_tx
+---
+
+# Swap Skill
+
+## Steps
+1. Look up both token addresses
+2. Get current price quote
+3. Build swap transaction
+4. Queue for user approval
+5. Broadcast on approval
+
+## Networks
+- Base: Use 0x Settler or Uniswap
+- Ethereum: Use Uniswap or 1inch
 ```
 
 ---

@@ -6,13 +6,13 @@ Configure StarkBot through environment variables and the dashboard.
 
 ## Environment Variables
 
-Set in `.env` or container environment.
+Set in `.env` or container environment. All environment variables are now optional - the system will boot with sensible defaults.
 
-### Required
+### Authentication (Optional)
 
 | Variable | Description |
 |----------|-------------|
-| `LOGIN_ADMIN_PUBLIC_ADDRESS` | Ethereum address for admin login (0x...) |
+| `LOGIN_ADMIN_PUBLIC_ADDRESS` | Ethereum address for admin login (0x...). If not set, uses a default address. |
 
 ### Server
 
@@ -22,6 +22,7 @@ Set in `.env` or container environment.
 | `GATEWAY_PORT` | 8081 | WebSocket port |
 | `DATABASE_URL` | ./.db/stark.db | SQLite path |
 | `RUST_LOG` | info | Log level |
+| `FRONTEND_DIST_DIR` | ./stark-frontend/dist | Frontend build directory |
 
 ### Memory Features
 
@@ -39,11 +40,30 @@ Set in `.env` or container environment.
 | `STARK_WORKSPACE_DIR` | ./workspace | File operations directory |
 | `STARK_SKILLS_DIR` | ./skills | Skills directory |
 
-### Web3 (Optional)
+### Web3 / Finance (Optional)
 
 | Variable | Description |
 |----------|-------------|
 | `BURNER_WALLET_BOT_PRIVATE_KEY` | Private key for x402 payments |
+
+Network configuration is stored in `config/networks.ron`:
+
+```ron
+networks: {
+    "ethereum": (
+        chain_id: 1,
+        rpc_url: "https://eth.llamarpc.com",
+        explorer_url: "https://etherscan.io",
+        native_symbol: "ETH",
+    ),
+    "base": (
+        chain_id: 8453,
+        rpc_url: "https://mainnet.base.org",
+        explorer_url: "https://basescan.org",
+        native_symbol: "ETH",
+    ),
+}
+```
 
 ### Example .env
 
@@ -72,10 +92,16 @@ Configure in **API Keys**:
 
 | Service | Purpose |
 |---------|---------|
-| `anthropic` | Claude models |
-| `openai` | GPT models |
-| `brave_search` | Web search |
-| `serpapi` | Web search (alternative) |
+| `ANTHROPIC_API_KEY` | Claude models |
+| `OPENAI_API_KEY` | GPT models |
+| `BRAVE_SEARCH_API_KEY` | Web search |
+| `SERPAPI_API_KEY` | Web search (alternative) |
+| `GITHUB_TOKEN` | GitHub operations |
+| `MOLTX_API_KEY` | MoltX social integrations |
+| `DISCORD_BOT_TOKEN` | Discord channel |
+| `TELEGRAM_BOT_TOKEN` | Telegram channel |
+| `SLACK_BOT_TOKEN` | Slack channel |
+| `SLACK_APP_TOKEN` | Slack socket mode |
 
 ### Agent Settings
 

@@ -2,7 +2,7 @@
 name: Architecture
 ---
 
-StarkBot is a modular system with a Rust backend, React frontend, and real-time WebSocket communication.
+StarkBot is a modular system with a Rust backend, React frontend, and real-time WebSocket communication. The agent uses a task planner and specialized subtypes for different workloads.
 
 ## System Overview
 
@@ -21,9 +21,10 @@ StarkBot is a modular system with a Rust backend, React frontend, and real-time 
 ┌──────────────────────────────────────────────────────────────┐
 │                   Message Dispatcher                          │
 │                                                               │
-│   1. Normalize message    4. Execute tool loop (max 10)       │
-│   2. Load identity        5. Extract memory markers           │
-│   3. Build AI context     6. Store history & respond          │
+│   1. Normalize message    4. Task planner (define_tasks)      │
+│   2. Load identity        5. Agent subtype selection          │
+│   3. Build AI context     6. Execute tool loop (max 100)      │
+│                           7. Store history & respond          │
 └───────────────────────────┬──────────────────────────────────┘
                             │
          ┌──────────────────┼──────────────────┐
@@ -32,10 +33,10 @@ StarkBot is a modular system with a Rust backend, React frontend, and real-time 
     │   AI    │       │  Tools   │       │  SQLite  │
     │ Client  │       │ Registry │       │ Database │
     │         │       │          │       │          │
-    │ Claude  │       │ Web      │       │ Sessions │
-    │ OpenAI  │       │ Files    │       │ Memories │
-    │ Llama   │       │ Exec     │       │ Channels │
-    │         │       │ Web3     │       │ Skills   │
+    │ Claude  │       │ System   │       │ Sessions │
+    │ OpenAI  │       │ Finance  │       │ Memories │
+    │ Llama   │       │ Dev      │       │ Tx Queue │
+    │ Kimi    │       │ Exec     │       │ Skills   │
     └─────────┘       └──────────┘       └──────────┘
 ```
 
@@ -60,18 +61,46 @@ The backend initializes services in order:
 The core message processing engine:
 
 ```
-Message → Normalize → Identity → Context → AI → Tools → Memory → Response
+Message → Normalize → Identity → Context → Task Planner → Subtype → AI → Tools → Memory → Response
 ```
 
 | Step | Action |
 |------|--------|
 | **Normalize** | Convert platform message to standard format |
 | **Identity** | Get or create user identity across platforms |
-| **Context** | Load session history + relevant memories |
+| **Context** | Load session history + relevant memories + context bank |
+| **Task Planner** | Break down request into discrete tasks (`define_tasks`) |
+| **Subtype** | Select toolbox: Finance, CodeEngineer, or Secretary |
 | **AI** | Send to configured provider with tool definitions |
-| **Tools** | Execute tool calls in loop (up to 10 iterations) |
+| **Tools** | Execute tool calls in loop (up to 100 iterations) |
 | **Memory** | Extract `[REMEMBER:]` markers and store |
 | **Response** | Send back to originating platform |
+
+### Task Planner
+
+The first iteration uses Task Planner mode to break down complex requests:
+
+```
+User: "Check my wallet balance and transfer 10 USDC to 0x123..."
+        ↓
+Task Planner calls define_tasks:
+  1. "Check wallet balance for all tokens"
+  2. "Transfer 10 USDC to address 0x123..."
+        ↓
+Agent executes tasks sequentially
+```
+
+### Agent Subtypes
+
+After planning, the agent selects a specialized toolbox:
+
+| Subtype | Tools Enabled | Use Cases |
+|---------|--------------|-----------|
+| **Finance** | x402_rpc, web3_tx, token_lookup, register_set | DeFi, swaps, transfers, balances |
+| **CodeEngineer** | grep, glob, edit_file, git, exec | Code editing, git operations, testing |
+| **Secretary** | agent_send, moltx tools, scheduling | Social media, messaging, marketing |
+
+The agent MUST call `set_agent_subtype` before using domain-specific tools.
 
 ### AI Providers
 
@@ -85,16 +114,19 @@ Unified interface supporting multiple providers:
 
 ### Tool Registry
 
-Tools organized by group and access level:
+Tools organized by 9 groups with access control:
 
 | Group | Tools |
 |-------|-------|
-| **Web** | `web_search`, `web_fetch` |
-| **Filesystem** | `read_file`, `write_file`, `list_files`, `glob`, `grep` |
-| **Exec** | `exec`, `git` |
-| **Messaging** | `agent_send`, `say_to_user` |
-| **Web3** | `web3_tx`, `token_lookup`, `x402_fetch` |
-| **System** | `subagent`, `memory_store`, `modify_soul` |
+| **System** | `set_agent_subtype`, `subagent`, `ask_user`, `say_to_user`, `memory_store`, `multi_memory_search`, `modify_soul`, `task_fully_completed`, `manage_skills` |
+| **Web** | `web_fetch` |
+| **Filesystem** | `read_file`, `list_files` |
+| **Finance** | `x402_rpc`, `x402_fetch`, `x402_post`, `web3_tx`, `broadcast_web3_tx`, `list_queued_web3_tx`, `web3_function_call`, `token_lookup`, `register_set` |
+| **Development** | `write_file`, `edit_file`, `apply_patch`, `delete_file`, `rename_file`, `grep`, `glob`, `git`, `github_user`, `committer`, `deploy`, `pr_quality` |
+| **Exec** | `exec` |
+| **Messaging** | `agent_send`, `discord_lookup`, `twitter_post` |
+| **Social** | MoltX integrations, scheduling tools |
+| **Memory** | Long-term memory storage and retrieval |
 
 ### WebSocket Gateway
 
@@ -105,9 +137,16 @@ Real-time event broadcasting (port 8081):
 | `agent.tool_call` | Tool execution started |
 | `tool.result` | Tool completed with result |
 | `agent.thinking` | AI processing indicator |
+| `agent.subtype_changed` | Agent switched toolbox |
+| `task.defined` | Task planner created tasks |
+| `task.completed` | Individual task finished |
 | `tx.pending` | Blockchain transaction pending |
 | `tx.confirmed` | Transaction confirmed |
+| `tx.queued` | Transaction added to queue for approval |
+| `x402.payment` | x402 micropayment made |
 | `confirmation.required` | User approval needed |
+| `context_bank.update` | Context bank extracted new terms |
+| `register.update` | Register value changed |
 
 ---
 
@@ -127,13 +166,24 @@ Real-time event broadcasting (port 8081):
 |------|---------|
 | **Dashboard** | Stats and quick actions |
 | **Agent Chat** | Real-time conversation interface |
-| **Channels** | Platform connections |
 | **Agent Settings** | AI model configuration |
-| **Tools** | Browse available tools |
+| **Bot Settings** | Bot identity and personality |
+| **Crypto Transactions** | Transaction queue and history |
+| **Channels** | Platform connections |
+| **Tools** | Browse available tools by group |
 | **Skills** | Upload and manage skills |
 | **Scheduling** | Cron jobs and automation |
+| **API Keys** | Service credentials management |
 | **Sessions** | Conversation history |
 | **Memories** | Long-term storage browser |
+| **Identities** | Cross-platform user tracking |
+| **Files** | Workspace file browser |
+| **System Files** | System configuration files |
+| **Journal** | Activity logs |
+| **Logs** | Live server logs |
+| **Debug** | Developer debugging tools |
+| **Payments** | x402 payment history |
+| **EIP-8004** | On-chain identity and reputation |
 
 ### Real-Time Updates
 
@@ -213,8 +263,13 @@ Key tables in SQLite:
 | `identity_links` | Cross-platform user mapping |
 | `chat_sessions` | Conversation contexts |
 | `session_messages` | Message history |
+| `agent_contexts` | Agent state, task queue, subtype |
 | `memories` | Long-term facts and preferences |
 | `external_channels` | Platform configurations |
+| `external_api_keys` | Encrypted service credentials |
 | `skills` | Custom skill definitions |
 | `cron_jobs` | Scheduled tasks |
 | `agent_settings` | AI model configuration |
+| `bot_settings` | Bot identity and personality |
+| `tx_queue` | Pending Web3 transactions |
+| `x402_payments` | Payment history |

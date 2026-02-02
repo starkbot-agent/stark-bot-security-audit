@@ -76,9 +76,11 @@ Go to **API Keys** and configure:
 
 In **Agent Settings**, select:
 
-- **Provider** — Claude, OpenAI, or Llama
+- **Provider** — Claude, OpenAI, Llama, or Kimi
 - **Model** — claude-sonnet-4-20250514, gpt-4, etc.
+- **Archetype** — Claude, OpenAI, Llama, or Kimi (determines API format)
 - **Temperature** — 0.0 (precise) to 1.0 (creative)
+- **Max Tokens** — Response length limit
 
 ### Connect a Channel *(Optional)*
 
@@ -96,7 +98,13 @@ Go to **Agent Chat** and send a message:
 
 > "Search the web for the latest Rust news and summarize it"
 
-Watch the tool execution progress in real-time.
+Watch the agent:
+1. **Plan tasks** — Breaks down your request into steps
+2. **Select subtype** — Chooses the right toolbox (CodeEngineer for this)
+3. **Execute tools** — Calls web_fetch and other tools
+4. **Report results** — Summarizes findings
+
+The debug panel shows real-time tool execution and task progress.
 
 ---
 

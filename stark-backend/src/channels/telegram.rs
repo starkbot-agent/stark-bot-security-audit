@@ -174,7 +174,19 @@ pub async fn start_telegram_listener(
                                     let content = event.data.get("content")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
-                                    Some(format_tool_result_for_telegram(tool_name, success, duration_ms, content))
+
+                                    // say_to_user messages are displayed directly without tool result formatting
+                                    if tool_name == "say_to_user" && success && !content.is_empty() {
+                                        // Truncate if too long for Telegram (4096 char limit)
+                                        let display_content = if content.len() > 4000 {
+                                            format!("{}...", &content[..4000])
+                                        } else {
+                                            content.to_string()
+                                        };
+                                        Some(display_content)
+                                    } else {
+                                        Some(format_tool_result_for_telegram(tool_name, success, duration_ms, content))
+                                    }
                                 }
                                 "agent.mode_change" => {
                                     let mode = event.data.get("mode")

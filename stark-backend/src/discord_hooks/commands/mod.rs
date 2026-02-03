@@ -25,17 +25,38 @@ pub fn parse(text: &str) -> Option<Command> {
     let text = text.trim();
     let parts: Vec<&str> = text.split_whitespace().collect();
 
+    log::debug!(
+        "Discord commands: Parsing '{}' -> {} parts: {:?}",
+        text,
+        parts.len(),
+        parts
+    );
+
     let command = parts.first()?.to_lowercase();
 
     match command.as_str() {
         "register" => {
             // Need an address argument
-            parts.get(1).map(|addr| Command::Register(addr.to_string()))
+            let result = parts.get(1).map(|addr| Command::Register(addr.to_string()));
+            if result.is_none() {
+                log::warn!(
+                    "Discord commands: 'register' parsed but no address found. Raw bytes: {:?}",
+                    text.as_bytes()
+                );
+            }
+            result
         }
         "status" | "whoami" | "me" => Some(Command::Status),
         "help" | "?" => Some(Command::Help),
         "unregister" | "deregister" | "remove" => Some(Command::Unregister),
-        _ => None,
+        _ => {
+            log::debug!(
+                "Discord commands: Unknown command '{}' (bytes: {:?})",
+                command,
+                command.as_bytes()
+            );
+            None
+        }
     }
 }
 

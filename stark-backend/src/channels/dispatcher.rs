@@ -340,47 +340,91 @@ impl MessageDispatcher {
             }
         };
 
-        // Get or create chat session
-        let session = match self.db.get_or_create_chat_session(
-            &message.channel_type,
-            message.channel_id,
-            &message.chat_id,
-            scope,
-            None,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                let error_msg = format!("Session error: {}", e);
-                log::error!("Failed to get/create session: {}", e);
-                self.broadcaster.broadcast(GatewayEvent::agent_error(
-                    message.channel_id,
-                    &error_msg,
-                ));
-                self.execution_tracker.complete_execution(message.channel_id);
-                return DispatchResult::error(error_msg);
-            }
-        };
-
-        // Context compaction for Discord and Telegram channels
-        // Keep only the last 10 messages to prevent context from growing too large
-        // This helps avoid API timeouts due to large payloads
+        // For gateway channels (Discord, Telegram), create a fresh session for each message
+        // to prevent context from growing too large. Previous conversation context is
+        // preserved by including the last 10 messages in the system prompt.
         let channel_type_lower = message.channel_type.to_lowercase();
-        if channel_type_lower == "discord" || channel_type_lower == "telegram" {
-            const KEEP_RECENT_MESSAGES: i32 = 10;
-            match self.db.delete_compacted_messages(session.id, KEEP_RECENT_MESSAGES) {
-                Ok(deleted) if deleted > 0 => {
+        let is_gateway_channel = channel_type_lower == "discord" || channel_type_lower == "telegram";
+
+        // Collect previous session messages for gateway channels (max 10)
+        let previous_gateway_messages: Vec<crate::models::SessionMessage> = if is_gateway_channel {
+            const MAX_PREVIOUS_MESSAGES: i32 = 10;
+
+            // Get the current active session (if any) and its messages
+            if let Ok(Some(prev_session)) = self.db.get_latest_session_for_channel(
+                &message.channel_type,
+                message.channel_id,
+            ) {
+                let messages = self.db.get_recent_session_messages(prev_session.id, MAX_PREVIOUS_MESSAGES)
+                    .unwrap_or_default();
+
+                // Deactivate the old session
+                if let Err(e) = self.db.deactivate_session(prev_session.id) {
+                    log::warn!("[DISPATCH] Failed to deactivate previous session {}: {}", prev_session.id, e);
+                } else {
                     log::info!(
-                        "[DISPATCH] Compacted session {} for {} channel: deleted {} old messages, keeping {}",
-                        session.id, message.channel_type, deleted, KEEP_RECENT_MESSAGES
+                        "[DISPATCH] Deactivated previous {} session {} with {} messages for context",
+                        message.channel_type, prev_session.id, messages.len()
                     );
                 }
-                Ok(_) => {} // No messages deleted, session was already compact
+
+                messages
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        // Get or create chat session
+        let session = if is_gateway_channel {
+            // Always create a fresh session for gateway channels
+            match self.db.create_gateway_session(
+                &message.channel_type,
+                message.channel_id,
+                scope,
+                None,
+            ) {
+                Ok(s) => {
+                    log::info!(
+                        "[DISPATCH] Created fresh {} session {} (previous context: {} messages)",
+                        message.channel_type, s.id, previous_gateway_messages.len()
+                    );
+                    s
+                }
                 Err(e) => {
-                    log::warn!("[DISPATCH] Failed to compact session {}: {}", session.id, e);
-                    // Continue anyway - compaction failure shouldn't block the request
+                    let error_msg = format!("Session error: {}", e);
+                    log::error!("Failed to create gateway session: {}", e);
+                    self.broadcaster.broadcast(GatewayEvent::agent_error(
+                        message.channel_id,
+                        &error_msg,
+                    ));
+                    self.execution_tracker.complete_execution(message.channel_id);
+                    return DispatchResult::error(error_msg);
                 }
             }
-        }
+        } else {
+            // Standard session handling for other channels
+            match self.db.get_or_create_chat_session(
+                &message.channel_type,
+                message.channel_id,
+                &message.chat_id,
+                scope,
+                None,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    let error_msg = format!("Session error: {}", e);
+                    log::error!("Failed to get/create session: {}", e);
+                    self.broadcaster.broadcast(GatewayEvent::agent_error(
+                        message.channel_id,
+                        &error_msg,
+                    ));
+                    self.execution_tracker.complete_execution(message.channel_id);
+                    return DispatchResult::error(error_msg);
+                }
+            }
+        };
 
         // Reset session state when a new message comes in on a previously-completed session
         // This allows the session to be reused for new requests
@@ -503,6 +547,36 @@ impl MessageDispatcher {
                 role: MessageRole::System,
                 content: format!("## Previous Conversation Summary\n{}", compaction_summary),
             });
+        }
+
+        // Add previous gateway chat messages (for Discord/Telegram fresh sessions)
+        // These are the last 10 messages from the previous session, providing continuity
+        if !previous_gateway_messages.is_empty() {
+            let mut context_text = String::from("## Previous Conversation\nRecent messages from the previous chat session:\n\n");
+            for msg in &previous_gateway_messages {
+                let role_label = match msg.role {
+                    DbMessageRole::User => "User",
+                    DbMessageRole::Assistant => "Assistant",
+                    DbMessageRole::System => "System",
+                    DbMessageRole::ToolCall => "Tool Call",
+                    DbMessageRole::ToolResult => "Tool Result",
+                };
+                // Truncate very long messages to keep context manageable
+                let content = if msg.content.len() > 500 {
+                    format!("{}...", &msg.content[..500])
+                } else {
+                    msg.content.clone()
+                };
+                context_text.push_str(&format!("**{}**: {}\n\n", role_label, content));
+            }
+            messages.push(Message {
+                role: MessageRole::System,
+                content: context_text,
+            });
+            log::info!(
+                "[DISPATCH] Added {} previous gateway messages to context",
+                previous_gateway_messages.len()
+            );
         }
 
         // Scan user input for key terms (ETH addresses, token symbols) for context bank

@@ -173,6 +173,85 @@ impl Database {
         Ok(session)
     }
 
+    /// Get the latest active session for a channel (without creating)
+    /// Used by gateway channels to get previous session before creating a new one
+    pub fn get_latest_session_for_channel(
+        &self,
+        channel_type: &str,
+        channel_id: i64,
+    ) -> SqliteResult<Option<ChatSession>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, session_key, agent_id, scope, channel_type, channel_id, platform_chat_id,
+             is_active, reset_policy, idle_timeout_minutes, daily_reset_hour,
+             created_at, updated_at, last_activity_at, expires_at, context_tokens, max_context_tokens, compaction_id, completion_status
+             FROM chat_sessions
+             WHERE channel_type = ?1 AND channel_id = ?2 AND is_active = 1
+             ORDER BY last_activity_at DESC LIMIT 1",
+        )?;
+
+        let session = stmt
+            .query_row(rusqlite::params![channel_type, channel_id], |row| Self::row_to_chat_session(row))
+            .ok();
+
+        Ok(session)
+    }
+
+    /// Create a new session for gateway channels (Discord, Telegram)
+    /// Always creates a fresh session with a unique key
+    pub fn create_gateway_session(
+        &self,
+        channel_type: &str,
+        channel_id: i64,
+        scope: SessionScope,
+        agent_id: Option<&str>,
+    ) -> SqliteResult<ChatSession> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        // Generate unique platform_chat_id with timestamp to ensure fresh session
+        let timestamp = now.timestamp_millis();
+        let platform_chat_id = format!("gateway-{}", timestamp);
+        let session_key = Self::generate_session_key(channel_type, channel_id, &platform_chat_id);
+
+        // Create new session
+        conn.execute(
+            "INSERT INTO chat_sessions (session_key, agent_id, scope, channel_type, channel_id, platform_chat_id,
+             is_active, reset_policy, idle_timeout_minutes, daily_reset_hour, created_at, updated_at, last_activity_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, ?10, ?10)",
+            rusqlite::params![
+                &session_key,
+                agent_id,
+                scope.as_str(),
+                channel_type,
+                channel_id,
+                &platform_chat_id,
+                ResetPolicy::default().as_str(),
+                Option::<i32>::None,
+                Some(0i32),
+                &now_str,
+            ],
+        )?;
+
+        let id = conn.last_insert_rowid();
+        drop(conn);
+
+        self.get_chat_session(id).map(|opt| opt.unwrap())
+    }
+
+    /// Mark a session as inactive (used when creating a new gateway session)
+    pub fn deactivate_session(&self, session_id: i64) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE chat_sessions SET is_active = 0, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![&now, session_id],
+        )?;
+        Ok(())
+    }
+
     /// Reset a chat session (mark old as inactive, create new)
     pub fn reset_chat_session(&self, id: i64) -> SqliteResult<ChatSession> {
         let conn = self.conn.lock().unwrap();

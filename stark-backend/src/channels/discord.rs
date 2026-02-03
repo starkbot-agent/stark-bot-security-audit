@@ -322,7 +322,22 @@ impl DiscordHandler {
                         let content = event.data.get("content")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        format_tool_result_for_discord(tool_name, success, duration_ms, content, output_config.tool_result_verbosity)
+
+                        // say_to_user messages are sent as permanent new messages, not status updates
+                        if tool_name == "say_to_user" && success && !content.is_empty() {
+                            let display_content = if content.len() > 2000 {
+                                format!("{}...", &content[..1997])
+                            } else {
+                                content.to_string()
+                            };
+                            // Send as a new permanent message (not editable status)
+                            if let Err(e) = discord_channel_id.say(&http, &display_content).await {
+                                log::error!("Discord: Failed to send say_to_user message: {}", e);
+                            }
+                            None // Don't update status message
+                        } else {
+                            format_tool_result_for_discord(tool_name, success, duration_ms, content, output_config.tool_result_verbosity)
+                        }
                     }
                     "agent.mode_change" => {
                         // Skip mode changes in minimal/none verbosity

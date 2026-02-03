@@ -461,7 +461,29 @@ impl OpenAIClient {
                 let error_msg = if let Ok(error_response) = serde_json::from_str::<OpenAIErrorResponse>(&error_text) {
                     format!("OpenAI API error: {}", error_response.error.message)
                 } else {
-                    format!("OpenAI API returned error status: {}, body: {}", status, error_text)
+                    // Don't include HTML error pages or overly long error bodies
+                    let trimmed = error_text.trim_start();
+                    let is_html = trimmed.starts_with("<!DOCTYPE")
+                        || trimmed.starts_with("<html")
+                        || trimmed.starts_with("<HTML");
+
+                    if is_html {
+                        // Friendly messages for common gateway errors
+                        match status_code {
+                            502 => "OpenAI API returned 502 Bad Gateway (provider temporarily unavailable)".to_string(),
+                            503 => "OpenAI API returned 503 Service Unavailable (provider temporarily unavailable)".to_string(),
+                            504 => "OpenAI API returned 504 Gateway Timeout (provider did not respond in time)".to_string(),
+                            _ => format!("OpenAI API returned error status: {} (HTML error page)", status),
+                        }
+                    } else {
+                        // Truncate long text errors
+                        let truncated = if error_text.len() > 200 {
+                            format!("{}...", &error_text[..200])
+                        } else {
+                            error_text.clone()
+                        };
+                        format!("OpenAI API returned error status: {}, body: {}", status, truncated)
+                    }
                 };
 
                 return Err(AiError::with_status(error_msg, status_code));

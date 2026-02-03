@@ -52,7 +52,7 @@ pub async fn execute(user_id: &str, address: &str, database: &Database) -> Resul
 
     Ok(format!(
         "Successfully registered your address: `{}`\n\n\
-        You can now receive tips from other users!",
+        You can receive tips. 🚀",
         address
     ))
 }

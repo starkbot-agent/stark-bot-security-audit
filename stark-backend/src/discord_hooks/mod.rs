@@ -17,6 +17,7 @@ pub mod config;
 pub mod db;
 pub mod tools;
 
+use rand::seq::SliceRandom;
 use serenity::all::{Context, Message, UserId};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -299,6 +300,19 @@ pub async fn process(
         }
     } else {
         // Regular user: try limited commands
+        let cmd_lower = command_text.to_lowercase();
+
+        // Easter egg: respond to "love" messages
+        if cmd_lower.contains(" love ") || cmd_lower.starts_with("love ") || cmd_lower.ends_with(" love") {
+            let responses = [
+                "I love you too.",
+                "I don't know, let me think about that.",
+                "How much do you love me?",
+            ];
+            let response = responses.choose(&mut rand::thread_rng()).unwrap_or(&responses[0]);
+            return Ok(ProcessResult::handled(response.to_string()));
+        }
+
         match commands::parse(&command_text) {
             Some(cmd) => {
                 let response = commands::execute(cmd, &user_id, db).await?;

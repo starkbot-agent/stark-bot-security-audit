@@ -8,8 +8,10 @@ pub struct ExecutionTask {
     pub id: String,
     /// Parent task ID for hierarchy (None if root)
     pub parent_id: Option<String>,
-    /// Channel ID this task belongs to
+    /// Channel ID this task belongs to (database channel ID)
     pub channel_id: i64,
+    /// Platform-specific chat ID (e.g., Discord channel snowflake) for routing events
+    pub chat_id: Option<String>,
     /// Session ID this task belongs to (for session-scoped cleanup)
     pub session_id: Option<i64>,
     /// Type of task
@@ -42,6 +44,7 @@ impl ExecutionTask {
             id: uuid::Uuid::new_v4().to_string(),
             parent_id,
             channel_id,
+            chat_id: None,
             session_id: None,
             task_type,
             description: description.into(),
@@ -57,6 +60,12 @@ impl ExecutionTask {
     /// Set the session ID for this task
     pub fn with_session_id(mut self, session_id: i64) -> Self {
         self.session_id = Some(session_id);
+        self
+    }
+
+    /// Set the chat ID for this task (platform-specific conversation ID)
+    pub fn with_chat_id(mut self, chat_id: impl Into<String>) -> Self {
+        self.chat_id = Some(chat_id.into());
         self
     }
 

@@ -333,6 +333,31 @@ impl Database {
         Ok(deleted > 0)
     }
 
+    /// Delete all chat sessions and their messages
+    /// Returns (deleted_count, channel_ids) where channel_ids can be used to cancel agents
+    pub fn delete_all_chat_sessions(&self) -> SqliteResult<(i64, Vec<i64>)> {
+        let conn = self.conn.lock().unwrap();
+
+        // Get all unique channel_ids first (for cancelling agents)
+        let mut stmt = conn.prepare("SELECT DISTINCT channel_id FROM chat_sessions")?;
+        let channel_ids: Vec<i64> = stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        // Delete all agent contexts
+        conn.execute("DELETE FROM agent_contexts", [])?;
+
+        // Count sessions before deleting
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM chat_sessions", [], |row| row.get(0))?;
+
+        // Delete all sessions (messages are cascade deleted via FK constraint)
+        conn.execute("DELETE FROM chat_sessions", [])?;
+
+        Ok((count, channel_ids))
+    }
+
     /// Update session reset policy
     pub fn update_session_reset_policy(
         &self,

@@ -124,10 +124,10 @@ curl -s "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies
 
 ## IMPORTANT: Communicating Results
 
-After fetching the price data, you MUST use `say_to_user` to tell the user the results. Format the response clearly:
+After fetching the price data, summarize the results to the user clearly:
 
 ```
-say_to_user: "Bitcoin is currently $83,876 USD (up 1.26% in 24h)"
+ "Bitcoin is currently $83,876 USD (up 1.26% in 24h)"
 ```
 
 Include:
@@ -135,4 +135,4 @@ Include:
 - 24h change percentage (if available)
 - Any other relevant data the user asked about
 
-Do NOT just call `task_fully_completed` without first telling the user the price via `say_to_user`.
+ 

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Calendar, Trash2, MessageSquare, Download, ChevronLeft, User, Bot, Wrench, CheckCircle, XCircle, AlertCircle, Play, Pause, RefreshCw } from 'lucide-react';
 import Card, { CardContent } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
-import { getSessions, deleteSession, getSessionTranscript, SessionMessage, getCronJobs, CronJobInfo, stopSession, resumeSession } from '@/lib/api';
+import { getSessions, deleteSession, deleteAllSessions, getSessionTranscript, SessionMessage, getCronJobs, CronJobInfo, stopSession, resumeSession } from '@/lib/api';
 
 type CompletionStatus = 'active' | 'complete' | 'cancelled' | 'failed';
 
@@ -45,6 +45,7 @@ export default function Sessions() {
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
 
   useEffect(() => {
     loadSessions();
@@ -150,6 +151,37 @@ export default function Sessions() {
       setTimeout(() => setSuccessMessage(null), 5000);
     } catch (err) {
       setError('Failed to delete session');
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    if (sessions.length === 0) return;
+
+    const confirmed = confirm(
+      `Delete ALL ${sessions.length} Sessions?\n\n` +
+      'This will:\n' +
+      '• Delete all sessions and their messages\n' +
+      '• Cancel any running AI agents/tasks\n' +
+      '• Stop any cron jobs using these sessions\n\n' +
+      'This action cannot be undone.'
+    );
+    if (!confirmed) return;
+
+    setIsDeletingAll(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const result = await deleteAllSessions();
+      setSessions([]);
+
+      const agentMsg = result.cancelled_agents > 0 ? ` Cancelled ${result.cancelled_agents} running agent(s).` : '';
+      setSuccessMessage(`Deleted ${result.deleted_count} session(s).${agentMsg}`);
+      setTimeout(() => setSuccessMessage(null), 5000);
+    } catch (err) {
+      setError('Failed to delete all sessions');
+    } finally {
+      setIsDeletingAll(false);
     }
   };
 
@@ -405,9 +437,32 @@ export default function Sessions() {
   // Sessions list view
   return (
     <div className="p-4 sm:p-8">
-      <div className="mb-6 sm:mb-8">
-        <h1 className="text-xl sm:text-2xl font-bold text-white mb-1 sm:mb-2">Chat Sessions</h1>
-        <p className="text-sm sm:text-base text-slate-400">View conversation history, export transcripts, or delete sessions</p>
+      <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-white mb-1 sm:mb-2">Chat Sessions</h1>
+          <p className="text-sm sm:text-base text-slate-400">View conversation history, export transcripts, or delete sessions</p>
+        </div>
+        {sessions.length > 0 && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleDeleteAll}
+            disabled={isDeletingAll}
+            className="text-red-400 hover:text-red-300 hover:bg-red-500/20 border-red-500/30 self-start"
+          >
+            {isDeletingAll ? (
+              <>
+                <div className="w-4 h-4 border-2 border-red-400 border-t-transparent rounded-full animate-spin mr-2" />
+                Deleting...
+              </>
+            ) : (
+              <>
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete All
+              </>
+            )}
+          </Button>
+        )}
       </div>
 
       {error && (

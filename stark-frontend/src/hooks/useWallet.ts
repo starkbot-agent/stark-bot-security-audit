@@ -1,17 +1,69 @@
 import { useState, useEffect, useCallback } from 'react';
 import { BrowserProvider, Contract, formatUnits } from 'ethers';
 
-// Base network configuration
-const BASE_CHAIN_ID_HEX = '0x2105';
+// Supported networks configuration
+type SupportedNetwork = 'mainnet' | 'base' | 'polygon';
 
-// USDC on Base
-const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+interface NetworkConfig {
+  chainIdHex: string;
+  chainIdDecimal: number;
+  name: string;
+  displayName: string;
+  usdcAddress: string;
+  nativeCurrency: { name: string; symbol: string; decimals: number };
+  rpcUrls: string[];
+  blockExplorerUrls: string[];
+}
+
+const SUPPORTED_NETWORKS: Record<SupportedNetwork, NetworkConfig> = {
+  mainnet: {
+    chainIdHex: '0x1',
+    chainIdDecimal: 1,
+    name: 'mainnet',
+    displayName: 'Mainnet',
+    usdcAddress: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+    nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://eth.llamarpc.com'],
+    blockExplorerUrls: ['https://etherscan.io'],
+  },
+  base: {
+    chainIdHex: '0x2105',
+    chainIdDecimal: 8453,
+    name: 'base',
+    displayName: 'Base',
+    usdcAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://mainnet.base.org'],
+    blockExplorerUrls: ['https://basescan.org'],
+  },
+  polygon: {
+    chainIdHex: '0x89',
+    chainIdDecimal: 137,
+    name: 'polygon',
+    displayName: 'Polygon',
+    usdcAddress: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    nativeCurrency: { name: 'MATIC', symbol: 'MATIC', decimals: 18 },
+    rpcUrls: ['https://polygon-rpc.com'],
+    blockExplorerUrls: ['https://polygonscan.com'],
+  },
+};
+
 const USDC_DECIMALS = 6;
 
 // Minimal ERC20 ABI for balance check
 const ERC20_ABI = [
   'function balanceOf(address owner) view returns (uint256)',
 ];
+
+// Helper to get network config from chain ID
+function getNetworkFromChainId(chainIdHex: string): NetworkConfig | null {
+  for (const network of Object.values(SUPPORTED_NETWORKS)) {
+    if (network.chainIdHex.toLowerCase() === chainIdHex.toLowerCase()) {
+      return network;
+    }
+  }
+  return null;
+}
 
 interface WalletState {
   address: string | null;
@@ -20,6 +72,7 @@ interface WalletState {
   isLoading: boolean;
   error: string | null;
   isCorrectNetwork: boolean;
+  currentNetwork: NetworkConfig | null;
 }
 
 export function useWallet() {
@@ -30,38 +83,41 @@ export function useWallet() {
     isLoading: true,
     error: null,
     isCorrectNetwork: false,
+    currentNetwork: null,
   });
 
-  const checkNetwork = useCallback(async (): Promise<boolean> => {
-    if (!window.ethereum) return false;
+  const checkNetwork = useCallback(async (): Promise<{ isSupported: boolean; network: NetworkConfig | null }> => {
+    if (!window.ethereum) return { isSupported: false, network: null };
     try {
-      const chainId = await window.ethereum.request({ method: 'eth_chainId' });
-      return chainId === BASE_CHAIN_ID_HEX;
+      const chainId = await window.ethereum.request({ method: 'eth_chainId' }) as string;
+      const network = getNetworkFromChainId(chainId);
+      return { isSupported: network !== null, network };
     } catch {
-      return false;
+      return { isSupported: false, network: null };
     }
   }, []);
 
-  const switchToBase = useCallback(async () => {
+  const switchNetwork = useCallback(async (networkName: SupportedNetwork) => {
     if (!window.ethereum) return false;
+    const networkConfig = SUPPORTED_NETWORKS[networkName];
     try {
       await window.ethereum.request({
         method: 'wallet_switchEthereumChain',
-        params: [{ chainId: BASE_CHAIN_ID_HEX }],
+        params: [{ chainId: networkConfig.chainIdHex }],
       });
       return true;
     } catch (switchError: unknown) {
-      // Chain not added, try to add it
+      // Chain not added, try to add it (not needed for mainnet, but for Base/Polygon)
       if ((switchError as { code?: number })?.code === 4902) {
         try {
           await window.ethereum.request({
             method: 'wallet_addEthereumChain',
             params: [{
-              chainId: BASE_CHAIN_ID_HEX,
-              chainName: 'Base',
-              nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-              rpcUrls: ['https://mainnet.base.org'],
-              blockExplorerUrls: ['https://basescan.org'],
+              chainId: networkConfig.chainIdHex,
+              chainName: networkConfig.displayName,
+              nativeCurrency: networkConfig.nativeCurrency,
+              rpcUrls: networkConfig.rpcUrls,
+              blockExplorerUrls: networkConfig.blockExplorerUrls,
             }],
           });
           return true;
@@ -73,11 +129,15 @@ export function useWallet() {
     }
   }, []);
 
-  const fetchUsdcBalance = useCallback(async (address: string): Promise<string | null> => {
+  const switchToBase = useCallback(async () => {
+    return switchNetwork('base');
+  }, [switchNetwork]);
+
+  const fetchUsdcBalance = useCallback(async (address: string, network: NetworkConfig): Promise<string | null> => {
     if (!window.ethereum) return null;
     try {
       const provider = new BrowserProvider(window.ethereum);
-      const usdcContract = new Contract(USDC_ADDRESS, ERC20_ABI, provider);
+      const usdcContract = new Contract(network.usdcAddress, ERC20_ABI, provider);
       const balance = await usdcContract.balanceOf(address);
       return formatUnits(balance, USDC_DECIMALS);
     } catch (err) {
@@ -103,18 +163,19 @@ export function useWallet() {
       }
 
       const address = accounts[0].toLowerCase();
-      const isCorrectNetwork = await checkNetwork();
+      let { isSupported, network } = await checkNetwork();
 
-      // Switch to Base if not on it
-      if (!isCorrectNetwork) {
+      // Switch to Base if not on a supported network
+      if (!isSupported) {
         await switchToBase();
+        const result = await checkNetwork();
+        isSupported = result.isSupported;
+        network = result.network;
       }
 
-      const finalNetworkCheck = await checkNetwork();
       let usdcBalance: string | null = null;
-
-      if (finalNetworkCheck) {
-        usdcBalance = await fetchUsdcBalance(address);
+      if (isSupported && network) {
+        usdcBalance = await fetchUsdcBalance(address, network);
       }
 
       setState({
@@ -123,7 +184,8 @@ export function useWallet() {
         isConnected: true,
         isLoading: false,
         error: null,
-        isCorrectNetwork: finalNetworkCheck,
+        isCorrectNetwork: isSupported,
+        currentNetwork: network,
       });
     } catch (err) {
       console.error('Wallet connection error:', err);
@@ -136,11 +198,11 @@ export function useWallet() {
   }, [checkNetwork, switchToBase, fetchUsdcBalance]);
 
   const refreshBalance = useCallback(async () => {
-    if (!state.address || !state.isCorrectNetwork) return;
+    if (!state.address || !state.isCorrectNetwork || !state.currentNetwork) return;
 
-    const usdcBalance = await fetchUsdcBalance(state.address);
+    const usdcBalance = await fetchUsdcBalance(state.address, state.currentNetwork);
     setState(prev => ({ ...prev, usdcBalance }));
-  }, [state.address, state.isCorrectNetwork, fetchUsdcBalance]);
+  }, [state.address, state.isCorrectNetwork, state.currentNetwork, fetchUsdcBalance]);
 
   // Auto-connect on mount if wallet was previously connected
   useEffect(() => {
@@ -155,11 +217,11 @@ export function useWallet() {
 
         if (accounts && accounts.length > 0) {
           const address = accounts[0].toLowerCase();
-          const isCorrectNetwork = await checkNetwork();
+          const { isSupported, network } = await checkNetwork();
           let usdcBalance: string | null = null;
 
-          if (isCorrectNetwork) {
-            usdcBalance = await fetchUsdcBalance(address);
+          if (isSupported && network) {
+            usdcBalance = await fetchUsdcBalance(address, network);
           }
 
           setState({
@@ -168,7 +230,8 @@ export function useWallet() {
             isConnected: true,
             isLoading: false,
             error: null,
-            isCorrectNetwork,
+            isCorrectNetwork: isSupported,
+            currentNetwork: network,
           });
         } else {
           setState(prev => ({ ...prev, isLoading: false }));
@@ -183,10 +246,11 @@ export function useWallet() {
 
   // Auto-refresh USDC balance every 10 seconds
   useEffect(() => {
-    if (!state.address || !state.isCorrectNetwork || !state.isConnected) return;
+    if (!state.address || !state.isCorrectNetwork || !state.isConnected || !state.currentNetwork) return;
 
+    const network = state.currentNetwork;
     const intervalId = setInterval(() => {
-      fetchUsdcBalance(state.address!).then(usdcBalance => {
+      fetchUsdcBalance(state.address!, network).then(usdcBalance => {
         if (usdcBalance !== null) {
           setState(prev => ({ ...prev, usdcBalance }));
         }
@@ -194,7 +258,7 @@ export function useWallet() {
     }, 10000); // 10 seconds
 
     return () => clearInterval(intervalId);
-  }, [state.address, state.isCorrectNetwork, state.isConnected, fetchUsdcBalance]);
+  }, [state.address, state.isCorrectNetwork, state.isConnected, state.currentNetwork, fetchUsdcBalance]);
 
   // Listen for account and network changes
   useEffect(() => {
@@ -210,14 +274,15 @@ export function useWallet() {
           isLoading: false,
           error: null,
           isCorrectNetwork: false,
+          currentNetwork: null,
         });
       } else {
         const address = accounts[0].toLowerCase();
-        const isCorrectNetwork = await checkNetwork();
+        const { isSupported, network } = await checkNetwork();
         let usdcBalance: string | null = null;
 
-        if (isCorrectNetwork) {
-          usdcBalance = await fetchUsdcBalance(address);
+        if (isSupported && network) {
+          usdcBalance = await fetchUsdcBalance(address, network);
         }
 
         setState(prev => ({
@@ -225,19 +290,20 @@ export function useWallet() {
           address,
           usdcBalance,
           isConnected: true,
-          isCorrectNetwork,
+          isCorrectNetwork: isSupported,
+          currentNetwork: network,
         }));
       }
     };
 
     const handleChainChanged = async () => {
-      const isCorrectNetwork = await checkNetwork();
+      const { isSupported, network } = await checkNetwork();
 
-      if (state.address && isCorrectNetwork) {
-        const usdcBalance = await fetchUsdcBalance(state.address);
-        setState(prev => ({ ...prev, isCorrectNetwork, usdcBalance }));
+      if (state.address && isSupported && network) {
+        const usdcBalance = await fetchUsdcBalance(state.address, network);
+        setState(prev => ({ ...prev, isCorrectNetwork: isSupported, currentNetwork: network, usdcBalance }));
       } else {
-        setState(prev => ({ ...prev, isCorrectNetwork, usdcBalance: null }));
+        setState(prev => ({ ...prev, isCorrectNetwork: isSupported, currentNetwork: network, usdcBalance: null }));
       }
     };
 
@@ -255,6 +321,11 @@ export function useWallet() {
     connect,
     refreshBalance,
     switchToBase,
+    switchNetwork,
   };
 }
+
+// Export for use in UI components
+export { SUPPORTED_NETWORKS };
+export type { SupportedNetwork, NetworkConfig };
 

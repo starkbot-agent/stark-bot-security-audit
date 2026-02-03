@@ -118,6 +118,7 @@ impl ExecutionTracker {
         &self,
         session_id: i64,
         channel_id: i64,
+        chat_id: Option<&str>,
         mode: &str,
         user_message: Option<&str>,
     ) -> String {
@@ -125,7 +126,7 @@ impl ExecutionTracker {
         self.clear_session_cancellation(session_id);
 
         // Create the execution using the normal method
-        let execution_id = self.start_execution(channel_id, mode, user_message);
+        let execution_id = self.start_execution(channel_id, chat_id, mode, user_message);
 
         // Set the session_id on the root execution task
         if let Some(mut task) = self.tasks.get_mut(&execution_id) {
@@ -289,7 +290,8 @@ impl ExecutionTracker {
     /// Start a new execution for a channel
     ///
     /// Returns the execution ID (which is also the root task ID)
-    pub fn start_execution(&self, channel_id: i64, mode: &str, user_message: Option<&str>) -> String {
+    /// The `chat_id` is the platform-specific conversation ID for routing events
+    pub fn start_execution(&self, channel_id: i64, chat_id: Option<&str>, mode: &str, user_message: Option<&str>) -> String {
         // Clear any previous cancellation flag
         self.clear_cancellation(channel_id);
 
@@ -320,6 +322,12 @@ impl ExecutionTracker {
             description,
             None,
         ).with_active_form(active_form);
+
+        // Set chat_id for event routing
+        if let Some(cid) = chat_id {
+            task = task.with_chat_id(cid);
+        }
+
         task.start();
 
         let execution_id = task.id.clone();
@@ -381,10 +389,11 @@ impl ExecutionTracker {
             task.active_form = Some(form.to_string());
         }
 
-        // Inherit session_id from parent task (usually the execution root)
+        // Inherit session_id and chat_id from parent task (usually the execution root)
         if let Some(pid) = parent_id {
             if let Some(parent) = self.tasks.get(pid) {
                 task.session_id = parent.session_id;
+                task.chat_id = parent.chat_id.clone();
             }
         }
 
@@ -666,6 +675,7 @@ impl ExecutionTracker {
             self.broadcaster.broadcast(GatewayEvent::task_updated(
                 task_id,
                 task.channel_id,
+                task.chat_id.as_deref(),
                 &metrics,
             ));
         }
@@ -681,6 +691,7 @@ impl ExecutionTracker {
             self.broadcaster.broadcast(GatewayEvent::task_updated(
                 task_id,
                 task.channel_id,
+                task.chat_id.as_deref(),
                 &task.metrics.clone(),
             ));
         }
@@ -694,6 +705,7 @@ impl ExecutionTracker {
             self.broadcaster.broadcast(GatewayEvent::task_updated_with_active_form(
                 task_id,
                 task.channel_id,
+                task.chat_id.as_deref(),
                 &task.metrics.clone(),
                 active_form,
             ));
@@ -707,6 +719,7 @@ impl ExecutionTracker {
             self.broadcaster.broadcast(GatewayEvent::task_completed(
                 task_id,
                 task.channel_id,
+                task.chat_id.as_deref(),
                 "completed",
                 &task.metrics,
             ));
@@ -720,6 +733,7 @@ impl ExecutionTracker {
             self.broadcaster.broadcast(GatewayEvent::task_completed(
                 task_id,
                 task.channel_id,
+                task.chat_id.as_deref(),
                 &format!("error: {}", error),
                 &task.metrics,
             ));
@@ -794,7 +808,7 @@ mod tests {
         let tracker = create_test_tracker();
 
         // Start execution
-        let execution_id = tracker.start_execution(1, "execute", Some("Test execution"));
+        let execution_id = tracker.start_execution(1, None, "execute", Some("Test execution"));
         assert!(!execution_id.is_empty());
         assert!(tracker.get_execution_id(1).is_some());
 
@@ -821,7 +835,7 @@ mod tests {
     fn test_metrics_aggregation() {
         let tracker = create_test_tracker();
 
-        let execution_id = tracker.start_execution(1, "execute", Some("Test execution"));
+        let execution_id = tracker.start_execution(1, None, "execute", Some("Test execution"));
 
         // Start multiple tools with arguments
         let args1 = serde_json::json!({"path": "/tmp/test.txt"});

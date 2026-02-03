@@ -488,6 +488,7 @@ impl GatewayEvent {
                 "parent_id": task.parent_id,
                 "parent_task_id": task.parent_id,  // Alias for frontend compatibility
                 "channel_id": task.channel_id,
+                "chat_id": task.chat_id,
                 "type": task.task_type.to_string(),
                 "name": task.description,  // Frontend expects 'name' field
                 "description": task.description,
@@ -498,12 +499,13 @@ impl GatewayEvent {
     }
 
     /// Task metrics updated
-    pub fn task_updated(task_id: &str, channel_id: i64, metrics: &TaskMetrics) -> Self {
+    pub fn task_updated(task_id: &str, channel_id: i64, chat_id: Option<&str>, metrics: &TaskMetrics) -> Self {
         Self::new(
             EventType::ExecutionTaskUpdated,
             serde_json::json!({
                 "task_id": task_id,
                 "channel_id": channel_id,
+                "chat_id": chat_id,
                 "metrics": {
                     "tool_uses": metrics.tool_uses,
                     "tokens_used": metrics.tokens_used,
@@ -515,12 +517,13 @@ impl GatewayEvent {
     }
 
     /// Task metrics and active form updated
-    pub fn task_updated_with_active_form(task_id: &str, channel_id: i64, metrics: &TaskMetrics, active_form: &str) -> Self {
+    pub fn task_updated_with_active_form(task_id: &str, channel_id: i64, chat_id: Option<&str>, metrics: &TaskMetrics, active_form: &str) -> Self {
         Self::new(
             EventType::ExecutionTaskUpdated,
             serde_json::json!({
                 "task_id": task_id,
                 "channel_id": channel_id,
+                "chat_id": chat_id,
                 "active_form": active_form,
                 "metrics": {
                     "tool_uses": metrics.tool_uses,
@@ -533,12 +536,13 @@ impl GatewayEvent {
     }
 
     /// Task completed
-    pub fn task_completed(task_id: &str, channel_id: i64, status: &str, metrics: &TaskMetrics) -> Self {
+    pub fn task_completed(task_id: &str, channel_id: i64, chat_id: Option<&str>, status: &str, metrics: &TaskMetrics) -> Self {
         Self::new(
             EventType::ExecutionTaskCompleted,
             serde_json::json!({
                 "task_id": task_id,
                 "channel_id": channel_id,
+                "chat_id": chat_id,
                 "status": status,
                 "metrics": {
                     "tool_uses": metrics.tool_uses,

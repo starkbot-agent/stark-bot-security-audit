@@ -251,6 +251,15 @@ export async function deleteSession(id: string): Promise<{
   return apiFetch(`/sessions/${id}`, { method: 'DELETE' });
 }
 
+export async function deleteAllSessions(): Promise<{
+  success: boolean;
+  message: string;
+  deleted_count: number;
+  cancelled_agents: number;
+}> {
+  return apiFetch('/sessions', { method: 'DELETE' });
+}
+
 // Get or create a session by channel type and ID
 export async function getOrCreateSession(
   channelType: string,

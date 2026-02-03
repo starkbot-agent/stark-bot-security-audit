@@ -214,6 +214,57 @@ async fn update_reset_policy(
     }
 }
 
+/// Delete all sessions and cancel any running agentic loops
+async fn delete_all_sessions(
+    data: web::Data<AppState>,
+    req: HttpRequest,
+) -> impl Responder {
+    if let Err(resp) = validate_session_from_request(&data, &req) {
+        return resp;
+    }
+
+    // Get all sessions and their channel_ids, then delete them
+    let (deleted_count, channel_ids) = match data.db.delete_all_chat_sessions() {
+        Ok(result) => result,
+        Err(e) => {
+            log::error!("Failed to delete all sessions: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Database error: {}", e)
+            }));
+        }
+    };
+
+    // Cancel all running subagents for all channels
+    let mut cancelled_agents = 0;
+    if let Some(subagent_manager) = data.dispatcher.subagent_manager() {
+        for channel_id in &channel_ids {
+            let count = subagent_manager.cancel_all_for_channel(*channel_id);
+            cancelled_agents += count;
+        }
+        if cancelled_agents > 0 {
+            log::info!(
+                "Delete all sessions: Cancelled {} running agent(s) across {} channels",
+                cancelled_agents,
+                channel_ids.len()
+            );
+        }
+    }
+
+    // Cancel executions and clear planner tasks for all channels
+    for channel_id in &channel_ids {
+        data.execution_tracker.cancel_execution(*channel_id);
+        data.execution_tracker.cancel_all_sessions_for_channel(*channel_id);
+        data.execution_tracker.clear_planner_tasks(*channel_id);
+    }
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "message": format!("Deleted {} sessions", deleted_count),
+        "deleted_count": deleted_count,
+        "cancelled_agents": cancelled_agents
+    }))
+}
+
 /// Force delete a session and cancel any running agentic loops
 async fn delete_session(
     data: web::Data<AppState>,
@@ -471,6 +522,7 @@ pub fn config(cfg: &mut web::ServiceConfig) {
         web::scope("/api/sessions")
             .route("", web::get().to(list_sessions))
             .route("", web::post().to(get_or_create_session))
+            .route("", web::delete().to(delete_all_sessions))
             .route("/{id}", web::get().to(get_session))
             .route("/{id}", web::delete().to(delete_session))
             .route("/{id}/reset", web::post().to(reset_session))

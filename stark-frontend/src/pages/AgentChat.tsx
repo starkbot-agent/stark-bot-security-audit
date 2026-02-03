@@ -14,7 +14,7 @@ import TxQueueConfirmationModal, { TxQueueTransaction } from '@/components/chat/
 import SubagentBadge from '@/components/chat/SubagentBadge';
 import { Subagent, SubagentStatus } from '@/lib/subagent-types';
 import { useGateway } from '@/hooks/useGateway';
-import { useWallet } from '@/hooks/useWallet';
+import { useWallet, SUPPORTED_NETWORKS, type SupportedNetwork } from '@/hooks/useWallet';
 import { sendChatMessage, getAgentSettings, getSkills, getTools, confirmTransaction, cancelTransaction, stopExecution, listSubagents, getActiveWebSession, getSessionTranscript, getExecutionStatus, createNewWebSession } from '@/lib/api';
 import { Command, COMMAND_DEFINITIONS, getAllCommands } from '@/lib/commands';
 import type { ChatMessage as ChatMessageType, MessageRole, SlashCommand, TrackedTransaction, TxPendingEvent, TxConfirmedEvent, PendingConfirmation, ConfirmationRequiredEvent, PlannerTask, TaskQueueUpdateEvent, TaskStatusChangeEvent } from '@/types';
@@ -104,6 +104,8 @@ export default function AgentChat() {
   );
   const [subtypeDropdownOpen, setSubtypeDropdownOpen] = useState(false);
   const subtypeDropdownRef = useRef<HTMLDivElement>(null);
+  const [networkDropdownOpen, setNetworkDropdownOpen] = useState(false);
+  const networkDropdownRef = useRef<HTMLDivElement>(null);
   const [sessionId, setSessionId] = useState<string>(() => {
     const stored = localStorage.getItem(STORAGE_KEY_SESSION_ID);
     if (stored) return stored;
@@ -118,7 +120,7 @@ export default function AgentChat() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const navigate = useNavigate();
   const { connected, on, off } = useGateway();
-  const { address, usdcBalance, isConnected: walletConnected, connect: connectWallet, isCorrectNetwork, switchToBase } = useWallet();
+  const { address, usdcBalance, isConnected: walletConnected, connect: connectWallet, isCorrectNetwork, currentNetwork, switchNetwork } = useWallet();
 
   // Persist messages to localStorage
   useEffect(() => {
@@ -139,11 +141,14 @@ export default function AgentChat() {
     }
   }, [agentSubtype]);
 
-  // Close subtype dropdown when clicking outside
+  // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (subtypeDropdownRef.current && !subtypeDropdownRef.current.contains(event.target as Node)) {
         setSubtypeDropdownOpen(false);
+      }
+      if (networkDropdownRef.current && !networkDropdownRef.current.contains(event.target as Node)) {
+        setNetworkDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -196,16 +201,24 @@ export default function AgentChat() {
             if (transcript.messages.length > 0) {
               // Convert DB messages to frontend format
               // Map tool_call and tool_result to 'tool' role for consistent styling
+              // Special case: say_to_user tool results render as assistant bubbles
               const dbMessages: ChatMessageType[] = transcript.messages.map((msg, index) => {
                 let role: MessageRole = msg.role as MessageRole;
-                // Map DB roles to display roles
-                if (msg.role === 'tool_call' || msg.role === 'tool_result') {
+                let content = msg.content;
+
+                // Check if this is a say_to_user tool result - render as assistant bubble
+                if (msg.role === 'tool_result' && msg.content.startsWith('**Result:** say_to_user\n')) {
+                  role = 'assistant';
+                  // Extract the actual message content (after the header line)
+                  content = msg.content.replace('**Result:** say_to_user\n', '');
+                } else if (msg.role === 'tool_call' || msg.role === 'tool_result') {
+                  // Map other tool messages to 'tool' role
                   role = 'tool';
                 }
                 return {
                   id: `db-${msg.id || index}`,
                   role,
-                  content: msg.content,
+                  content,
                   timestamp: new Date(msg.created_at),
                   sessionId: backendSessionId,
                 };
@@ -281,6 +294,20 @@ export default function AgentChat() {
 
       console.log('[AgentChat] Received tool.result event:', data);
       const event = data as { tool_name: string; success: boolean; duration_ms: number; content: string };
+
+      // Special handling for say_to_user - render as assistant message bubble
+      if (event.tool_name === 'say_to_user' && event.success && event.content) {
+        const message: ChatMessageType = {
+          id: crypto.randomUUID(),
+          role: 'assistant' as MessageRole,
+          content: event.content,
+          timestamp: new Date(),
+          sessionId,
+        };
+        setMessages((prev) => [...prev, message]);
+        return;
+      }
+
       const statusEmoji = event.success ? '✅' : '❌';
       const statusText = event.success ? 'Success' : 'Failed';
 
@@ -1330,22 +1357,52 @@ export default function AgentChat() {
                 </button>
               </div>
 
-              {/* USDC Balance */}
-              <div className="flex items-center gap-2 bg-slate-700/50 px-3 py-1.5 rounded-lg">
-                <span className="text-sm font-semibold text-white">
-                  {isCorrectNetwork ? formatBalance(usdcBalance) : '--'}
-                </span>
-                {isCorrectNetwork ? (
-                  <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full font-medium">
-                    USDC · Base
+              {/* USDC Balance with Network Selector */}
+              <div className="relative" ref={networkDropdownRef}>
+                <button
+                  onClick={() => setNetworkDropdownOpen(!networkDropdownOpen)}
+                  className="flex items-center gap-2 bg-slate-700/50 px-3 py-1.5 rounded-lg hover:bg-slate-600/50 transition-colors cursor-pointer"
+                >
+                  <span className="text-sm font-semibold text-white">
+                    {isCorrectNetwork ? formatBalance(usdcBalance) : '--'}
                   </span>
-                ) : (
-                  <button
-                    onClick={switchToBase}
-                    className="text-xs px-2 py-0.5 bg-amber-500/20 text-amber-400 rounded-full font-medium hover:bg-amber-500/30 transition-colors cursor-pointer"
-                  >
-                    Switch to Base
-                  </button>
+                  {isCorrectNetwork && currentNetwork ? (
+                    <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full font-medium">
+                      USDC · {currentNetwork.displayName}
+                    </span>
+                  ) : (
+                    <span className="text-xs px-2 py-0.5 bg-amber-500/20 text-amber-400 rounded-full font-medium">
+                      Switch Network
+                    </span>
+                  )}
+                  <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform ${networkDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {networkDropdownOpen && (
+                  <div className="absolute top-full right-0 mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl z-50 min-w-[160px] py-1">
+                    {(Object.keys(SUPPORTED_NETWORKS) as SupportedNetwork[]).map((networkKey) => {
+                      const network = SUPPORTED_NETWORKS[networkKey];
+                      const isActive = currentNetwork?.name === network.name;
+                      return (
+                        <button
+                          key={networkKey}
+                          onClick={async () => {
+                            setNetworkDropdownOpen(false);
+                            if (!isActive) {
+                              await switchNetwork(networkKey);
+                            }
+                          }}
+                          className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-left transition-colors ${
+                            isActive
+                              ? 'bg-blue-500/20 text-blue-400'
+                              : 'text-slate-300 hover:bg-slate-700'
+                          }`}
+                        >
+                          <span>{network.displayName}</span>
+                          {isActive && <Check className="w-4 h-4" />}
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             </div>

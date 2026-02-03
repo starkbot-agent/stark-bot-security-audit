@@ -83,6 +83,10 @@ strum = { version = "0.26", features = ["derive"] }
 # Skills ZIP upload
 zip = "0.6"
 
+# Polymarket CLOB client (rs-clob-client)
+# Full-featured SDK for trading on Polymarket prediction markets
+polymarket-client-sdk = { version = "0.4", features = ["clob", "ws", "data", "gamma", "heartbeats"] }
+
 [[bin]]
 name = "agent_test"
 path = "src/bin/agent_test.rs"

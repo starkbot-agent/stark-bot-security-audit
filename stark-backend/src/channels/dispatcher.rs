@@ -293,6 +293,7 @@ impl MessageDispatcher {
         let user_msg = clean_text.as_deref().unwrap_or(&message.text);
         let execution_id = self.execution_tracker.start_execution(
             message.channel_id,
+            Some(&message.chat_id),
             "execute",
             Some(user_msg),
         );

@@ -153,8 +153,34 @@ pub async fn process(
         .map_err(|e| format!("Failed to get current user: {}", e))?;
     let bot_id = current_user.id;
 
+    // Ignore replies - if someone replies to a message containing @bot, that shouldn't count
+    // as the replying user mentioning the bot
+    if msg.message_reference.is_some() {
+        log::debug!("Discord hooks: Ignoring reply from {}", msg.author.name);
+        return Ok(ProcessResult::not_handled());
+    }
+
     // Check if bot is mentioned
     if !is_bot_mentioned(msg, bot_id) {
+        // Check if they mentioned a role the bot has (common mistake)
+        if !msg.mention_roles.is_empty() {
+            if let Some(guild_id) = msg.guild_id {
+                // Get bot's roles in this guild
+                if let Ok(bot_member) = guild_id.member(&ctx.http, bot_id).await {
+                    let bot_roles: std::collections::HashSet<_> = bot_member.roles.iter().collect();
+                    let mentioned_bot_role = msg.mention_roles.iter().any(|r| bot_roles.contains(r));
+
+                    if mentioned_bot_role {
+                        return Ok(ProcessResult::handled(
+                            "It looks like you mentioned my **role**, not me directly. \
+                            Please @mention the bot user instead of the role.\n\n\
+                            **Tip:** When typing `@stark`, look for the one with the bot icon 🤖, \
+                            not the role icon 🏷️".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
         // In DMs, we might want to process without mention
         // For now, require mention in all contexts
         return Ok(ProcessResult::not_handled());

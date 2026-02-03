@@ -133,6 +133,18 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
+        // Ignore webhook messages (integrations, other bots disguised as users)
+        if msg.webhook_id.is_some() {
+            log::debug!("Discord: Ignoring webhook message from {}", msg.author.name);
+            return;
+        }
+
+        // Ignore system messages (joins, pins, boosts, etc.) - only process regular messages
+        if msg.kind != serenity::all::MessageType::Regular {
+            log::debug!("Discord: Ignoring non-regular message type {:?} from {}", msg.kind, msg.author.name);
+            return;
+        }
+
         let text = msg.content.clone();
         if text.is_empty() {
             return;

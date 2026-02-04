@@ -18,9 +18,9 @@ pub const DEFAULT_KEYSTORE_URL: &str = "https://keystore.defirelay.com";
 /// HTTP request timeout
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Maximum payment amount in wei (10000 tokens with 18 decimals)
-/// This is a safety limit to prevent accidental overpayment
-const MAX_PAYMENT_WEI: &str = "10000000000000000000000";
+/// Maximum payment amount in wei (1000 STARKBOT with 18 decimals)
+/// This is a safety limit to prevent the keystore server from overcharging
+const MAX_PAYMENT_WEI: &str = "1000000000000000000000";
 
 /// Cached session for keystore API
 #[derive(Debug, Clone)]
@@ -389,7 +389,7 @@ impl KeystoreClient {
 
         if required_num > max_num {
             return Err(format!(
-                "Payment amount {} exceeds safety limit of {} (10000 tokens)",
+                "Payment amount {} exceeds safety limit of {} (1000 STARKBOT)",
                 required_amount, MAX_PAYMENT_WEI
             ));
         }

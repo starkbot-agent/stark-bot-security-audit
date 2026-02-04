@@ -105,7 +105,7 @@ impl X402Signer {
         erc20::decode_nonces(&bytes)
     }
 
-    /// Sign a payment based on the scheme in requirements
+    /// Sign a payment in V1 format (for keystore relay)
     /// Automatically chooses EIP-2612 (permit) or EIP-3009 (exact) based on scheme
     pub async fn sign_payment(
         &self,
@@ -114,15 +114,30 @@ impl X402Signer {
         let token_metadata = TokenMetadata::from_requirements(requirements);
 
         match requirements.scheme.as_str() {
-            "permit" => self.sign_permit(requirements, &token_metadata).await,
-            "exact" | "eip3009" => self.sign_transfer_with_auth(requirements, &token_metadata).await,
+            "permit" => self.sign_permit_v1(requirements, &token_metadata).await,
+            "exact" | "eip3009" => self.sign_transfer_with_auth_v1(requirements, &token_metadata).await,
             other => Err(format!("Unsupported payment scheme: {}", other)),
         }
     }
 
-    /// Sign an EIP-2612 Permit for x402 payment
+    /// Sign a payment in V2 format (for Kimi/AI relay - has "accepted" field)
+    /// Automatically chooses EIP-2612 (permit) or EIP-3009 (exact) based on scheme
+    pub async fn sign_payment_v2(
+        &self,
+        requirements: &PaymentRequirements,
+    ) -> Result<PaymentPayloadV2, String> {
+        let token_metadata = TokenMetadata::from_requirements(requirements);
+
+        match requirements.scheme.as_str() {
+            "permit" => self.sign_permit_v2(requirements, &token_metadata).await,
+            "exact" | "eip3009" => self.sign_transfer_with_auth_v2(requirements, &token_metadata).await,
+            other => Err(format!("Unsupported payment scheme: {}", other)),
+        }
+    }
+
+    /// Sign an EIP-2612 Permit for x402 payment (V1 format for keystore)
     /// The facilitator becomes the spender, allowing them to transfer tokens on our behalf
-    async fn sign_permit(
+    async fn sign_permit_v1(
         &self,
         requirements: &PaymentRequirements,
         token_metadata: &TokenMetadata,
@@ -180,7 +195,79 @@ impl X402Signer {
         };
 
         let payload = PaymentPayload {
-            x402_version: X402_VERSION,
+            x402_version: X402_VERSION_V1,
+            scheme: requirements.scheme.clone(),
+            network: requirements.network.clone(),
+            payload: ExactEvmPayload {
+                signature,
+                authorization: EvmAuthorization::Eip2612(authorization),
+            },
+        };
+
+        Ok(payload)
+    }
+
+    /// Sign an EIP-2612 Permit for x402 payment (V2 format for Kimi/AI relay)
+    async fn sign_permit_v2(
+        &self,
+        requirements: &PaymentRequirements,
+        token_metadata: &TokenMetadata,
+    ) -> Result<PaymentPayloadV2, String> {
+        let from = self.address();
+        let value = requirements.max_amount_required.clone();
+
+        // Get facilitator address (spender) from extra field
+        let spender = requirements.extra.as_ref()
+            .and_then(|e| e.facilitator_signer.clone())
+            .ok_or("EIP-2612 permit requires facilitatorSigner in extra field")?;
+
+        // Deadline: valid for 1 hour
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| format!("Time error: {}", e))?;
+        let deadline = now.as_secs() + 3600;
+
+        // For EIP-2612, nonce must be fetched from the token contract
+        let token_address: ethers::types::Address = token_metadata.address.parse()
+            .map_err(|e| format!("Invalid token address: {}", e))?;
+
+        // Fetch nonce from token contract using direct RPC call
+        let nonce_u256 = self.fetch_permit_nonce(&requirements.network, token_address).await?;
+
+        log::info!(
+            "[X402Signer] EIP-2612 permit nonce for {} on {}: {}",
+            from, requirements.network, nonce_u256
+        );
+
+        // Build EIP-712 domain from token metadata
+        let domain = Eip712Domain::from_token_metadata(token_metadata)?;
+
+        // Build permit message
+        let message = PermitMessage {
+            owner: self.wallet.address(),
+            spender: spender.parse()
+                .map_err(|e| format!("Invalid facilitatorSigner address: {}", e))?,
+            value: U256::from_dec_str(&requirements.max_amount_required)
+                .map_err(|e| format!("Invalid amount: {}", e))?,
+            nonce: nonce_u256,
+            deadline: U256::from(deadline),
+        };
+
+        // Sign the typed data
+        let signature = self.sign_eip712(&domain, message.struct_hash()).await?;
+
+        // Build EIP-2612 authorization format
+        let authorization = Eip2612Authorization {
+            owner: from,
+            spender,
+            value,
+            nonce: nonce_u256.to_string(),
+            deadline: deadline.to_string(),
+        };
+
+        // Build V2 payload with "accepted" field
+        let payload = PaymentPayloadV2 {
+            x402_version: X402_VERSION_V2,
             accepted: AcceptedPayment {
                 scheme: requirements.scheme.clone(),
                 network: requirements.network.clone(),
@@ -198,8 +285,8 @@ impl X402Signer {
         Ok(payload)
     }
 
-    /// Sign an EIP-3009 TransferWithAuthorization for x402 payment
-    async fn sign_transfer_with_auth(
+    /// Sign an EIP-3009 TransferWithAuthorization for x402 payment (V1 format)
+    async fn sign_transfer_with_auth_v1(
         &self,
         requirements: &PaymentRequirements,
         token_metadata: &TokenMetadata,
@@ -247,7 +334,69 @@ impl X402Signer {
         };
 
         let payload = PaymentPayload {
-            x402_version: X402_VERSION,
+            x402_version: X402_VERSION_V1,
+            scheme: requirements.scheme.clone(),
+            network: requirements.network.clone(),
+            payload: ExactEvmPayload {
+                signature,
+                authorization: EvmAuthorization::Eip3009(authorization),
+            },
+        };
+
+        Ok(payload)
+    }
+
+    /// Sign an EIP-3009 TransferWithAuthorization for x402 payment (V2 format for Kimi/AI relay)
+    async fn sign_transfer_with_auth_v2(
+        &self,
+        requirements: &PaymentRequirements,
+        token_metadata: &TokenMetadata,
+    ) -> Result<PaymentPayloadV2, String> {
+        let from = self.address();
+        let to = requirements.pay_to_address.to_lowercase();
+        let value = requirements.max_amount_required.clone();
+        let valid_after = "0".to_string();
+
+        // Valid for 1 hour
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| format!("Time error: {}", e))?;
+        let valid_before = (now.as_secs() + 3600).to_string();
+
+        let nonce = Self::generate_nonce();
+        let nonce_hex = format!("{:?}", nonce);
+
+        // Build EIP-712 domain from token metadata
+        let domain = Eip712Domain::from_token_metadata(token_metadata)?;
+
+        let message = TransferWithAuthorizationMessage {
+            from: self.wallet.address(),
+            to: requirements.pay_to_address.parse()
+                .map_err(|e| format!("Invalid pay_to_address: {}", e))?,
+            value: U256::from_dec_str(&requirements.max_amount_required)
+                .map_err(|e| format!("Invalid amount: {}", e))?,
+            valid_after: U256::zero(),
+            valid_before: U256::from_dec_str(&valid_before)
+                .map_err(|e| format!("Invalid valid_before: {}", e))?,
+            nonce,
+        };
+
+        // Sign the typed data
+        let signature = self.sign_eip712(&domain, message.struct_hash()).await?;
+
+        // Build EIP-3009 authorization format
+        let authorization = Eip3009Authorization {
+            from,
+            to,
+            value: value.clone(),
+            valid_after,
+            valid_before,
+            nonce: nonce_hex,
+        };
+
+        // Build V2 payload with "accepted" field
+        let payload = PaymentPayloadV2 {
+            x402_version: X402_VERSION_V2,
             accepted: AcceptedPayment {
                 scheme: requirements.scheme.clone(),
                 network: requirements.network.clone(),

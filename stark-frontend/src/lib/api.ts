@@ -826,7 +826,12 @@ export async function deleteApiKey(keyName: string): Promise<void> {
 // Cloud Backup API
 export interface BackupResponse {
   success: boolean;
-  key_count: number;
+  key_count?: number;
+  node_count?: number;
+  connection_count?: number;
+  cron_job_count?: number;
+  has_settings?: boolean;
+  has_heartbeat?: boolean;
   message?: string;
   error?: string;
 }
@@ -836,20 +841,29 @@ export interface CloudKeyPreview {
   key_preview: string;
 }
 
-export interface PreviewKeysResponse {
+export interface CloudBackupPreview {
   success: boolean;
   key_count: number;
   keys: CloudKeyPreview[];
+  node_count?: number;
+  connection_count?: number;
+  cron_job_count?: number;
+  has_settings?: boolean;
+  has_heartbeat?: boolean;
+  backup_version?: number;
   message?: string;
   error?: string;
 }
+
+// Legacy alias for backwards compatibility
+export type PreviewKeysResponse = CloudBackupPreview;
 
 export async function backupKeysToCloud(): Promise<BackupResponse> {
   const response = await apiFetch<BackupResponse>('/keys/cloud_backup', {
     method: 'POST',
   });
   if (!response.success) {
-    throw new Error(response.error || 'Failed to backup keys');
+    throw new Error(response.error || 'Failed to backup');
   }
   return response;
 }
@@ -859,20 +873,23 @@ export async function restoreKeysFromCloud(): Promise<BackupResponse> {
     method: 'POST',
   });
   if (!response.success) {
-    throw new Error(response.error || 'Failed to restore keys');
+    throw new Error(response.error || 'Failed to restore');
   }
   return response;
 }
 
-export async function previewKeysFromCloud(): Promise<PreviewKeysResponse> {
-  const response = await apiFetch<PreviewKeysResponse>('/keys/cloud_preview', {
+export async function previewCloudBackup(): Promise<CloudBackupPreview> {
+  const response = await apiFetch<CloudBackupPreview>('/keys/cloud_preview', {
     method: 'GET',
   });
   if (!response.success) {
-    throw new Error(response.error || 'Failed to preview cloud keys');
+    throw new Error(response.error || 'Failed to preview cloud backup');
   }
   return response;
 }
+
+// Legacy alias
+export const previewKeysFromCloud = previewCloudBackup;
 
 // Cron Jobs API
 export interface CronJobInfo {

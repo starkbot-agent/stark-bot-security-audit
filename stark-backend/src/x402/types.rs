@@ -11,8 +11,11 @@ pub const BASE_CHAIN_ID: u64 = 8453;
 /// Base Sepolia testnet chain ID
 pub const BASE_SEPOLIA_CHAIN_ID: u64 = 84532;
 
-/// x402 protocol version
-pub const X402_VERSION: u8 = 2;
+/// x402 protocol version V1 (for keystore relay)
+pub const X402_VERSION_V1: u8 = 1;
+
+/// x402 protocol version V2 (for Kimi/AI relay - requires "accepted" field)
+pub const X402_VERSION_V2: u8 = 2;
 
 /// Network identifier for Base
 pub const NETWORK_ID: &str = "eip155:8453";
@@ -109,15 +112,30 @@ impl TokenMetadata {
     }
 }
 
-/// Payment payload sent to server with X-PAYMENT header
+/// Payment payload V1 format (for keystore relay)
+/// scheme/network at top level, no "accepted" field
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentPayload {
+    pub x402_version: u8,
+    /// Scheme at top level (V1 format)
+    pub scheme: String,
+    /// Network at top level (V1 format)
+    pub network: String,
+    pub payload: ExactEvmPayload,
+}
+
+/// Payment payload V2 format (for Kimi/AI relay)
+/// Contains "accepted" field as expected by Kimi relay
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentPayloadV2 {
     pub x402_version: u8,
     pub accepted: AcceptedPayment,
     pub payload: ExactEvmPayload,
 }
 
+/// AcceptedPayment - used in V2 format for Kimi relay
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcceptedPayment {
@@ -171,6 +189,15 @@ pub struct Eip3009Authorization {
 
 impl PaymentPayload {
     /// Encode payment payload to base64 for X-PAYMENT header
+    pub fn to_base64(&self) -> Result<String, String> {
+        let json = serde_json::to_string(self)
+            .map_err(|e| format!("Failed to serialize payment payload: {}", e))?;
+        Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, json))
+    }
+}
+
+impl PaymentPayloadV2 {
+    /// Encode V2 payment payload to base64 for X-PAYMENT header
     pub fn to_base64(&self) -> Result<String, String> {
         let json = serde_json::to_string(self)
             .map_err(|e| format!("Failed to serialize payment payload: {}", e))?;

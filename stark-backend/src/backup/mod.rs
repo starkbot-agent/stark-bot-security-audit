@@ -27,6 +27,12 @@ pub struct BackupData {
     pub mind_map_nodes: Vec<MindNodeEntry>,
     /// Mind map connections
     pub mind_map_connections: Vec<MindConnectionEntry>,
+    /// Cron jobs (scheduled tasks)
+    #[serde(default)]
+    pub cron_jobs: Vec<CronJobEntry>,
+    /// Heartbeat config (optional)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat_config: Option<HeartbeatConfigEntry>,
     /// Memories (optional - can be large)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memories: Option<Vec<MemoryEntry>>,
@@ -45,6 +51,8 @@ impl BackupData {
             api_keys: Vec::new(),
             mind_map_nodes: Vec::new(),
             mind_map_connections: Vec::new(),
+            cron_jobs: Vec::new(),
+            heartbeat_config: None,
             memories: None,
             bot_settings: None,
         }
@@ -55,8 +63,10 @@ impl BackupData {
         self.api_keys.len()
             + self.mind_map_nodes.len()
             + self.mind_map_connections.len()
+            + self.cron_jobs.len()
             + self.memories.as_ref().map(|m| m.len()).unwrap_or(0)
             + if self.bot_settings.is_some() { 1 } else { 0 }
+            + if self.heartbeat_config.is_some() { 1 } else { 0 }
     }
 }
 
@@ -84,6 +94,39 @@ pub struct MindNodeEntry {
 pub struct MindConnectionEntry {
     pub parent_id: i64,
     pub child_id: i64,
+}
+
+/// Cron job entry in backup
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronJobEntry {
+    pub name: String,
+    pub description: Option<String>,
+    pub schedule_type: String,
+    pub schedule_value: String,
+    pub timezone: Option<String>,
+    pub session_mode: String,
+    pub message: Option<String>,
+    pub system_event: Option<String>,
+    pub channel_id: Option<i64>,
+    pub deliver_to: Option<String>,
+    pub deliver: bool,
+    pub model_override: Option<String>,
+    pub thinking_level: Option<String>,
+    pub timeout_seconds: Option<i32>,
+    pub delete_after_run: bool,
+    pub status: String,
+}
+
+/// Heartbeat config entry in backup
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatConfigEntry {
+    pub channel_id: Option<i64>,
+    pub interval_minutes: i32,
+    pub target: String,
+    pub active_hours_start: Option<String>,
+    pub active_hours_end: Option<String>,
+    pub active_days: Option<String>,
+    pub enabled: bool,
 }
 
 /// Memory entry in backup

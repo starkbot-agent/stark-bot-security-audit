@@ -20,6 +20,7 @@ import Journal from '@/pages/Journal';
 import Logs from '@/pages/Logs';
 import Debug from '@/pages/Debug';
 import ApiKeys from '@/pages/ApiKeys';
+import CloudBackup from '@/pages/CloudBackup';
 import Payments from '@/pages/Payments';
 import EIP8004 from '@/pages/EIP8004';
 import CryptoTransactions from '@/pages/CryptoTransactions';
@@ -42,6 +43,7 @@ function App() {
         <Route path="/heartbeat" element={<Heartbeat />} />
         <Route path="/scheduling" element={<Scheduling />} />
         <Route path="/api-keys" element={<ApiKeys />} />
+        <Route path="/cloud-backup" element={<CloudBackup />} />
         <Route path="/sessions" element={<Sessions />} />
         <Route path="/sessions/:sessionId" element={<Sessions />} />
         <Route path="/memories" element={<MemoryBrowser />} />

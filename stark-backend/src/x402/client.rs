@@ -134,8 +134,8 @@ impl X402Client {
         // Create payment info before signing
         let payment_info = X402PaymentInfo::from_requirements(requirements);
 
-        // Sign the payment
-        let payment_payload = self.signer.sign_payment(requirements).await?;
+        // Sign the payment using V2 format (required by Kimi/AI relay)
+        let payment_payload = self.signer.sign_payment_v2(requirements).await?;
         let payment_header_value = payment_payload.to_base64()?;
 
         log::info!(

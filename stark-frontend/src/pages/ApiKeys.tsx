@@ -1,9 +1,9 @@
 import { useState, useEffect, FormEvent } from 'react';
-import { Key, Trash2, Plus, ExternalLink, Check, X, Cloud, Upload, Download, Shield, AlertCircle, CheckCircle, Eye } from 'lucide-react';
+import { Key, Trash2, Plus, ExternalLink, Check, X } from 'lucide-react';
 import Card, { CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
-import { getApiKeys, upsertApiKey, deleteApiKey, getServiceConfigs, ApiKey, ServiceConfig, backupKeysToCloud, restoreKeysFromCloud, previewKeysFromCloud, CloudKeyPreview } from '@/lib/api';
+import { getApiKeys, upsertApiKey, deleteApiKey, getServiceConfigs, ApiKey, ServiceConfig } from '@/lib/api';
 
 export default function ApiKeys() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
@@ -13,13 +13,6 @@ export default function ApiKeys() {
   const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Cloud backup state
-  const [isUploading, setIsUploading] = useState(false);
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [isPreviewing, setIsPreviewing] = useState(false);
-  const [backupMessage, setBackupMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [previewModalOpen, setPreviewModalOpen] = useState(false);
-  const [previewKeys, setPreviewKeys] = useState<CloudKeyPreview[]>([]);
 
   useEffect(() => {
     loadData();
@@ -150,65 +143,6 @@ export default function ApiKeys() {
     setKeyInputs(prev => ({ ...prev, [keyName]: value }));
   };
 
-  // Cloud backup handlers
-  const formatKeystoreError = (err: unknown): string => {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    // Check for keystore connection errors
-    if (message.includes('keystore') || message.includes('connect') || message.includes('BadGateway')) {
-      return 'Keystore server is unreachable. Please try again later.';
-    }
-    return message;
-  };
-
-  const handleUploadBackup = async () => {
-    if (keys.length === 0) {
-      setBackupMessage({ type: 'error', text: 'No API keys to backup' });
-      return;
-    }
-
-    setIsUploading(true);
-    setBackupMessage(null);
-
-    try {
-      const result = await backupKeysToCloud();
-      setBackupMessage({ type: 'success', text: `Backed up ${result.key_count} keys to cloud` });
-    } catch (err) {
-      setBackupMessage({ type: 'error', text: formatKeystoreError(err) });
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  const handleDownloadBackup = async () => {
-    setIsDownloading(true);
-    setBackupMessage(null);
-
-    try {
-      const result = await restoreKeysFromCloud();
-      await loadKeys();
-      setBackupMessage({ type: 'success', text: `Restored ${result.key_count} keys from backup` });
-    } catch (err) {
-      setBackupMessage({ type: 'error', text: formatKeystoreError(err) });
-    } finally {
-      setIsDownloading(false);
-    }
-  };
-
-  const handlePreviewCloudKeys = async () => {
-    setIsPreviewing(true);
-    setBackupMessage(null);
-
-    try {
-      const result = await previewKeysFromCloud();
-      setPreviewKeys(result.keys);
-      setPreviewModalOpen(true);
-    } catch (err) {
-      setBackupMessage({ type: 'error', text: formatKeystoreError(err) });
-    } finally {
-      setIsPreviewing(false);
-    }
-  };
-
   if (isLoading) {
     return (
       <div className="p-8 flex items-center justify-center">
@@ -241,144 +175,70 @@ export default function ApiKeys() {
         </div>
       )}
 
-      {/* Configuration Summary and Cloud Backup Row */}
-      <div className="mb-6 flex flex-col lg:flex-row gap-6">
-        {/* Installed Keys */}
-        <div className="flex-1">
-          <Card className="h-full">
-            <CardHeader>
-              <CardTitle>Installed Keys</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {keys.length === 0 ? (
-                <div className="text-center py-8 text-slate-500">
-                  <Key className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p>No API keys configured yet.</p>
-                  <p className="text-sm mt-1">Add keys below to get started.</p>
-                </div>
-              ) : (
-                <div className="flex flex-wrap gap-4">
-                  {serviceConfigs.map((config) => {
-                    const configuredKeys = config.keys.filter(k => isKeyConfigured(k.name));
-                    if (configuredKeys.length === 0) return null;
+      {/* Installed Keys Summary */}
+      <div className="mb-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>Installed Keys</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {keys.length === 0 ? (
+              <div className="text-center py-8 text-slate-500">
+                <Key className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p>No API keys configured yet.</p>
+                <p className="text-sm mt-1">Add keys below to get started.</p>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-4">
+                {serviceConfigs.map((config) => {
+                  const configuredKeys = config.keys.filter(k => isKeyConfigured(k.name));
+                  if (configuredKeys.length === 0) return null;
 
-                    return (
-                      <div key={config.group} className="p-4 bg-slate-900/50 rounded-lg border border-slate-700 flex-1 min-w-[250px]">
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="font-medium text-white">{config.label}</p>
-                          {isGroupComplete(config) ? (
-                            <span className="flex items-center gap-1 text-xs text-green-400">
-                              <Check className="w-3 h-3" />
-                              Complete
-                            </span>
-                          ) : (
-                            <span className="flex items-center gap-1 text-xs text-yellow-400">
-                              <X className="w-3 h-3" />
-                              Partial
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-sm text-slate-400 space-y-1">
-                          {config.keys.map((keyConfig) => {
-                            const configuredKey = getConfiguredKey(keyConfig.name);
-                            return (
-                              <p key={keyConfig.name} className="flex items-center gap-2">
-                                {configuredKey ? (
-                                  <Check className="w-3 h-3 text-green-400" />
-                                ) : (
-                                  <X className="w-3 h-3 text-slate-600" />
-                                )}
-                                <span className={configuredKey ? 'text-slate-300' : 'text-slate-600'}>
-                                  {keyConfig.label}
-                                </span>
-                                {configuredKey && (
-                                  <span className="font-mono text-slate-500">
-                                    {configuredKey.key_preview}
-                                  </span>
-                                )}
-                              </p>
-                            );
-                          })}
-                        </div>
+                  return (
+                    <div key={config.group} className="p-4 bg-slate-900/50 rounded-lg border border-slate-700 flex-1 min-w-[250px]">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="font-medium text-white">{config.label}</p>
+                        {isGroupComplete(config) ? (
+                          <span className="flex items-center gap-1 text-xs text-green-400">
+                            <Check className="w-3 h-3" />
+                            Complete
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1 text-xs text-yellow-400">
+                            <X className="w-3 h-3" />
+                            Partial
+                          </span>
+                        )}
                       </div>
-                    );
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Encrypted Cloud Backup */}
-        <div className="lg:w-80 lg:flex-shrink-0">
-          <Card className="h-full border-stark-500/30">
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <Cloud className="w-5 h-5 text-stark-400" />
-                <CardTitle>Encrypted Cloud Backup</CardTitle>
+                      <div className="text-sm text-slate-400 space-y-1">
+                        {config.keys.map((keyConfig) => {
+                          const configuredKey = getConfiguredKey(keyConfig.name);
+                          return (
+                            <p key={keyConfig.name} className="flex items-center gap-2">
+                              {configuredKey ? (
+                                <Check className="w-3 h-3 text-green-400" />
+                              ) : (
+                                <X className="w-3 h-3 text-slate-600" />
+                              )}
+                              <span className={configuredKey ? 'text-slate-300' : 'text-slate-600'}>
+                                {keyConfig.label}
+                              </span>
+                              {configuredKey && (
+                                <span className="font-mono text-slate-500">
+                                  {configuredKey.key_preview}
+                                </span>
+                              )}
+                            </p>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-start gap-2 mb-4 p-2 bg-stark-500/10 rounded-lg">
-                <Shield className="w-4 h-4 text-stark-400 mt-0.5 flex-shrink-0" />
-                <p className="text-xs text-slate-400">
-                  Encrypted with your burner wallet key. Only this instance can decrypt the backup.
-                </p>
-              </div>
-
-              {backupMessage && (
-                <div
-                  className={`mb-4 px-3 py-2 rounded-lg text-sm flex items-start gap-2 ${
-                    backupMessage.type === 'success'
-                      ? 'bg-green-500/20 border border-green-500/50 text-green-400'
-                      : 'bg-red-500/20 border border-red-500/50 text-red-400'
-                  }`}
-                >
-                  {backupMessage.type === 'success' ? (
-                    <CheckCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  ) : (
-                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  )}
-                  <span>{backupMessage.text}</span>
-                </div>
-              )}
-
-              <div className="space-y-3">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleUploadBackup}
-                  isLoading={isUploading}
-                  disabled={keys.length === 0}
-                  className="w-full"
-                >
-                  <Upload className="w-4 h-4 mr-2" />
-                  Backup to Cloud
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handlePreviewCloudKeys}
-                  isLoading={isPreviewing}
-                  className="w-full"
-                >
-                  <Eye className="w-4 h-4 mr-2" />
-                  View Cloud Keys
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleDownloadBackup}
-                  isLoading={isDownloading}
-                  className="w-full"
-                >
-                  <Download className="w-4 h-4 mr-2" />
-                  Restore from Cloud
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* Service Groups and Info */}
@@ -510,87 +370,6 @@ export default function ApiKeys() {
             </CardContent>
           </Card>
         </div>
-
-      {/* Cloud Keys Preview Modal */}
-      {previewModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-            onClick={() => setPreviewModalOpen(false)}
-          />
-          {/* Modal */}
-          <div className="relative bg-slate-800 border border-slate-700 rounded-xl shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden">
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-stark-500/20 rounded-lg">
-                  <Cloud className="w-5 h-5 text-stark-400" />
-                </div>
-                <div>
-                  <h2 className="text-lg font-semibold text-white">Cloud Keys Preview</h2>
-                  <p className="text-sm text-slate-400">{previewKeys.length} keys stored in cloud</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setPreviewModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            {/* Content */}
-            <div className="p-6 overflow-y-auto max-h-[50vh]">
-              {previewKeys.length === 0 ? (
-                <div className="text-center py-8 text-slate-500">
-                  <Cloud className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p>No keys found in cloud backup.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {previewKeys.map((key) => (
-                    <div
-                      key={key.key_name}
-                      className="flex items-center justify-between p-3 bg-slate-900/50 rounded-lg border border-slate-700"
-                    >
-                      <div className="flex items-center gap-3">
-                        <Key className="w-4 h-4 text-slate-500" />
-                        <span className="text-sm font-medium text-white">{key.key_name}</span>
-                      </div>
-                      <span className="text-sm font-mono text-slate-400">{key.key_preview}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            {/* Footer */}
-            <div className="flex items-center justify-between px-6 py-4 border-t border-slate-700 bg-slate-900/30">
-              <p className="text-xs text-slate-500">
-                Use "Restore from Cloud" to apply these keys
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setPreviewModalOpen(false)}
-                >
-                  Close
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setPreviewModalOpen(false);
-                    handleDownloadBackup();
-                  }}
-                >
-                  <Download className="w-4 h-4 mr-2" />
-                  Restore Now
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

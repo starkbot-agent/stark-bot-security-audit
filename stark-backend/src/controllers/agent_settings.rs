@@ -288,16 +288,9 @@ pub async fn get_auto_sync_status(
         return resp;
     }
 
-    // Get wallet address from config
-    let wallet_address = match &state.config.burner_wallet_private_key {
-        Some(pk) => match crate::keystore_client::get_wallet_address(pk) {
-            Ok(addr) => addr.to_lowercase(),
-            Err(e) => {
-                return HttpResponse::InternalServerError().json(serde_json::json!({
-                    "error": format!("Failed to get wallet address: {}", e)
-                }));
-            }
-        },
+    // Get wallet address from wallet provider
+    let wallet_address = match &state.wallet_provider {
+        Some(provider) => provider.get_address().to_lowercase(),
         None => {
             return HttpResponse::Ok().json(serde_json::json!({
                 "status": null,

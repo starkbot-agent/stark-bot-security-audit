@@ -2204,6 +2204,25 @@ impl MessageDispatcher {
             log::warn!("[MULTI_AGENT] Failed to save context for session {}: {}", session_id, e);
         }
 
+        // Update completion status based on how the loop ended
+        // This is critical for safe mode chats that don't use tasks - they would otherwise stay 'active' forever
+        if was_cancelled {
+            log::info!("[ORCHESTRATED_LOOP] Marking session {} as Cancelled", session_id);
+            if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Cancelled) {
+                log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
+            }
+            self.broadcast_session_complete(original_message.channel_id, session_id);
+        } else if orchestrator_complete && !waiting_for_user_response {
+            // Session completed successfully (via say_to_user in safe mode, task_fully_completed, etc.)
+            log::info!("[ORCHESTRATED_LOOP] Marking session {} as Complete", session_id);
+            if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Complete) {
+                log::error!("[ORCHESTRATED_LOOP] Failed to update session completion status: {}", e);
+            }
+            self.broadcast_session_complete(original_message.channel_id, session_id);
+        }
+        // Note: If waiting_for_user_response, session stays Active (correct behavior)
+        // Note: If max iterations hit without completion, session stays Active for potential retry
+
         // If cancelled with work done, save a summary so context is preserved on resume
         if was_cancelled && !tool_call_log.is_empty() {
             let summary = format!(
@@ -2882,6 +2901,25 @@ impl MessageDispatcher {
         if let Err(e) = self.db.save_agent_context(session_id, orchestrator.context()) {
             log::warn!("[MULTI_AGENT] Failed to save context for session {}: {}", session_id, e);
         }
+
+        // Update completion status based on how the loop ended
+        // This is critical for safe mode chats that don't use tasks - they would otherwise stay 'active' forever
+        if was_cancelled {
+            log::info!("[TEXT_ORCHESTRATED] Marking session {} as Cancelled", session_id);
+            if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Cancelled) {
+                log::error!("[TEXT_ORCHESTRATED] Failed to update session completion status: {}", e);
+            }
+            self.broadcast_session_complete(original_message.channel_id, session_id);
+        } else if orchestrator_complete && !waiting_for_user_response {
+            // Session completed successfully (via say_to_user in safe mode, task_fully_completed, etc.)
+            log::info!("[TEXT_ORCHESTRATED] Marking session {} as Complete", session_id);
+            if let Err(e) = self.db.update_session_completion_status(session_id, CompletionStatus::Complete) {
+                log::error!("[TEXT_ORCHESTRATED] Failed to update session completion status: {}", e);
+            }
+            self.broadcast_session_complete(original_message.channel_id, session_id);
+        }
+        // Note: If waiting_for_user_response, session stays Active (correct behavior)
+        // Note: If max iterations hit without completion, session stays Active for potential retry
 
         // If cancelled with work done, save a summary so context is preserved on resume
         if was_cancelled && !tool_call_log.is_empty() {

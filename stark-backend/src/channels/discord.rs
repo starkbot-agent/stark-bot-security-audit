@@ -525,6 +525,10 @@ impl DiscordHandler {
         } else if let Some(error) = result.error {
             let error_msg = format!("Sorry, I encountered an error: {}", error);
             let _ = msg.channel_id.say(&ctx.http, &error_msg).await;
+        } else if result.response.is_empty() {
+            // Empty response with no error - this shouldn't happen but handle gracefully
+            log::warn!("Discord: Dispatch returned empty response with no error for user {}", user_name);
+            let _ = msg.channel_id.say(&ctx.http, "I processed your request but have nothing to say. Please try rephrasing your question.").await;
         }
     }
 }

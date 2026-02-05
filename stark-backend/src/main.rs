@@ -22,6 +22,7 @@ mod qmd_memory;
 mod scheduler;
 mod skills;
 mod tools;
+mod wallet;
 mod x402;
 mod eip8004;
 mod hooks;
@@ -39,6 +40,7 @@ use hooks::HookManager;
 use scheduler::{Scheduler, SchedulerConfig};
 use skills::SkillRegistry;
 use tools::ToolRegistry;
+use wallet::WalletProvider;
 
 pub struct AppState {
     pub db: Arc<Database>,
@@ -54,6 +56,8 @@ pub struct AppState {
     pub hook_manager: Arc<HookManager>,
     pub tx_queue: Arc<TxQueueManager>,
     pub safe_mode_rate_limiter: SafeModeChannelRateLimiter,
+    /// Wallet provider - abstracts standard vs flash mode
+    pub wallet_provider: Arc<dyn WalletProvider>,
 }
 
 /// Auto-retrieve backup from keystore on fresh instance
@@ -532,6 +536,21 @@ async fn main() -> std::io::Result<()> {
         auto_retrieve_from_keystore(&db, private_key).await;
     }
 
+    // Initialize Wallet Provider (abstracts standard vs flash mode)
+    log::info!("Initializing wallet provider");
+    let wallet_provider = wallet::create_wallet_provider().await
+        .unwrap_or_else(|e| {
+            log::warn!("Failed to create wallet provider: {}. Wallet features will be disabled.", e);
+            // Create a dummy provider for graceful degradation
+            Arc::new(wallet::EnvWalletProvider::from_private_key(
+                "0x0000000000000000000000000000000000000000000000000000000000000001"
+            ).expect("Failed to create fallback wallet"))
+        });
+    log::info!("Wallet provider initialized: {} mode, address: {}",
+        wallet_provider.mode_name(),
+        wallet_provider.get_address()
+    );
+
     // Initialize Tool Registry with built-in tools
     log::info!("Initializing tool registry");
     let tool_registry = Arc::new(tools::create_default_registry());
@@ -652,6 +671,7 @@ async fn main() -> std::io::Result<()> {
     let hook_mgr = hook_manager.clone();
     let tx_q = tx_queue.clone();
     let safe_mode_rl = safe_mode_rate_limiter.clone();
+    let wallet_prov = wallet_provider.clone();
     let frontend_dist = frontend_dist.to_string();
 
     let server = HttpServer::new(move || {
@@ -676,6 +696,7 @@ async fn main() -> std::io::Result<()> {
                 hook_manager: Arc::clone(&hook_mgr),
                 tx_queue: Arc::clone(&tx_q),
                 safe_mode_rate_limiter: safe_mode_rl.clone(),
+                wallet_provider: Arc::clone(&wallet_prov),
             }))
             .app_data(web::Data::new(Arc::clone(&sched)))
             // WebSocket data for /ws route

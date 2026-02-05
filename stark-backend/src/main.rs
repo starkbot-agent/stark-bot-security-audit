@@ -74,19 +74,38 @@ pub struct AppState {
 ///
 /// Retry logic: 3 attempts with exponential backoff (2s, 4s, 8s)
 async fn auto_retrieve_from_keystore(db: &std::sync::Arc<db::Database>, private_key: &str) {
-    auto_retrieve_from_keystore_with_retry(db, private_key).await;
+    auto_retrieve_from_keystore_with_retry(db, private_key, None).await;
 }
 
-async fn auto_retrieve_from_keystore_with_retry(db: &std::sync::Arc<db::Database>, private_key: &str) {
+/// Auto-retrieve with a wallet provider for keystore auth (Flash/Privy mode).
+/// The private_key is still used for ECIES decryption; the wallet provider is used
+/// for SIWE auth so the keystore sees the correct (Privy) wallet address.
+async fn auto_retrieve_from_keystore_with_provider(
+    db: &std::sync::Arc<db::Database>,
+    private_key: &str,
+    wallet_provider: &std::sync::Arc<dyn wallet::WalletProvider>,
+) {
+    auto_retrieve_from_keystore_with_retry(db, private_key, Some(wallet_provider.clone())).await;
+}
+
+async fn auto_retrieve_from_keystore_with_retry(
+    db: &std::sync::Arc<db::Database>,
+    private_key: &str,
+    wallet_provider: Option<std::sync::Arc<dyn wallet::WalletProvider>>,
+) {
     const MAX_RETRIES: u32 = 3;
     const INITIAL_BACKOFF_SECS: u64 = 2;
 
-    // Get wallet address (normalize to lowercase)
-    let wallet_address = match keystore_client::get_wallet_address(private_key) {
-        Ok(addr) => addr.to_lowercase(),
-        Err(e) => {
-            log::warn!("[Keystore] Failed to get wallet address: {}", e);
-            return;
+    // Get wallet address - prefer wallet provider (correct in Flash/Privy mode)
+    let wallet_address = if let Some(ref wp) = wallet_provider {
+        wp.get_address().to_lowercase()
+    } else {
+        match keystore_client::get_wallet_address(private_key) {
+            Ok(addr) => addr.to_lowercase(),
+            Err(e) => {
+                log::warn!("[Keystore] Failed to get wallet address: {}", e);
+                return;
+            }
         }
     };
 
@@ -137,7 +156,12 @@ async fn auto_retrieve_from_keystore_with_retry(db: &std::sync::Arc<db::Database
             tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
         }
 
-        match keystore_client::KEYSTORE_CLIENT.get_keys(private_key).await {
+        let get_result = if let Some(ref wp) = wallet_provider {
+            keystore_client::KEYSTORE_CLIENT.get_keys_with_provider(wp).await
+        } else {
+            keystore_client::KEYSTORE_CLIENT.get_keys(private_key).await
+        };
+        match get_result {
             Ok(resp) => {
                 if resp.success {
                     // Successfully got backup, restore it
@@ -603,8 +627,8 @@ async fn main() -> std::io::Result<()> {
     };
 
     // Flash mode: derive a deterministic backup key from the Flash wallet signature
-    // This allows cloud backup (ECIES encryption, SIWE auth, x402 signing) to work
-    // even though the actual Privy private key is never exposed.
+    // This key is used ONLY for ECIES encryption/decryption of backup data.
+    // Keystore auth (SIWE) and x402 payments use the actual Privy wallet provider.
     if is_flash_mode {
         if let Some(ref wp) = wallet_provider {
             match wp.sign_message(b"starkbot-backup-key-v1").await {
@@ -614,9 +638,9 @@ async fn main() -> std::io::Result<()> {
                     config.burner_wallet_private_key = Some(hex::encode(derived_key));
                     log::info!("Flash mode: derived backup encryption key from wallet signature");
 
-                    // Now run auto-retrieval with the derived key
+                    // Auto-retrieval: use wallet provider for keystore auth, derived key for decryption
                     if let Some(ref private_key) = config.burner_wallet_private_key {
-                        auto_retrieve_from_keystore(&db, private_key).await;
+                        auto_retrieve_from_keystore_with_provider(&db, private_key, wp).await;
                     }
                 }
                 Err(e) => {
@@ -681,6 +705,7 @@ async fn main() -> std::io::Result<()> {
         gateway.broadcaster().clone(),
         execution_tracker.clone(),
         scheduler_config,
+        wallet_provider.clone(),
     ));
 
     // Start scheduler background task

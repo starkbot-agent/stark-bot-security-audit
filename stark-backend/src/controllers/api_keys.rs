@@ -626,24 +626,28 @@ async fn backup_to_cloud(state: web::Data<AppState>, req: HttpRequest) -> impl R
         }
     };
 
-    // Get wallet address
-    let wallet_address = match get_wallet_address(&private_key) {
-        Some(addr) => addr,
-        None => {
-            return HttpResponse::InternalServerError().json(BackupResponse {
-                success: false,
-                key_count: None,
-                node_count: None,
-                connection_count: None,
-                cron_job_count: None,
-                channel_count: None,
-                channel_setting_count: None,
-                has_settings: None,
-                has_heartbeat: None,
-                has_soul: None,
-                message: None,
-                error: Some("Failed to derive wallet address".to_string()),
-            });
+    // Get wallet address - prefer wallet provider (correct in Flash/Privy mode)
+    let wallet_address = if let Some(ref wp) = state.wallet_provider {
+        wp.get_address()
+    } else {
+        match get_wallet_address(&private_key) {
+            Some(addr) => addr,
+            None => {
+                return HttpResponse::InternalServerError().json(BackupResponse {
+                    success: false,
+                    key_count: None,
+                    node_count: None,
+                    connection_count: None,
+                    cron_job_count: None,
+                    channel_count: None,
+                    channel_setting_count: None,
+                    has_settings: None,
+                    has_heartbeat: None,
+                    has_soul: None,
+                    message: None,
+                    error: Some("Failed to derive wallet address".to_string()),
+                });
+            }
         }
     };
 
@@ -917,7 +921,13 @@ async fn backup_to_cloud(state: web::Data<AppState>, req: HttpRequest) -> impl R
     };
 
     // Upload to keystore API (with SIWE authentication)
-    match KEYSTORE_CLIENT.store_keys(&private_key, &encrypted_data, item_count).await {
+    // In Flash mode, use wallet provider for auth/x402 (Privy wallet has the STARKBOT tokens)
+    let store_result = if let Some(ref wp) = state.wallet_provider {
+        KEYSTORE_CLIENT.store_keys_with_provider(wp, &encrypted_data, item_count).await
+    } else {
+        KEYSTORE_CLIENT.store_keys(&private_key, &encrypted_data, item_count).await
+    };
+    match store_result {
         Ok(resp) if resp.success => {
             // Record backup in local state
             if let Err(e) = state.db.record_keystore_backup(&backup.wallet_address, backup.version, item_count) {
@@ -1017,7 +1027,13 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
     };
 
     // Fetch from keystore API (with SIWE authentication)
-    let keystore_resp = match KEYSTORE_CLIENT.get_keys(&private_key).await {
+    // In Flash mode, use wallet provider for auth (Privy wallet)
+    let keystore_result = if let Some(ref wp) = state.wallet_provider {
+        KEYSTORE_CLIENT.get_keys_with_provider(wp).await
+    } else {
+        KEYSTORE_CLIENT.get_keys(&private_key).await
+    };
+    let keystore_resp = match keystore_result {
         Ok(resp) => resp,
         Err(e) => {
             log::error!("Failed to connect to keystore: {}", e);
@@ -1553,7 +1569,13 @@ async fn preview_cloud_keys(state: web::Data<AppState>, req: HttpRequest) -> imp
     };
 
     // Fetch from keystore API (with SIWE authentication)
-    let keystore_resp = match KEYSTORE_CLIENT.get_keys(&private_key).await {
+    // In Flash mode, use wallet provider for auth (Privy wallet)
+    let keystore_result = if let Some(ref wp) = state.wallet_provider {
+        KEYSTORE_CLIENT.get_keys_with_provider(wp).await
+    } else {
+        KEYSTORE_CLIENT.get_keys(&private_key).await
+    };
+    let keystore_resp = match keystore_result {
         Ok(resp) => resp,
         Err(e) => {
             log::error!("Failed to connect to keystore: {}", e);

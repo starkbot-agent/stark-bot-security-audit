@@ -1289,59 +1289,7 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
         }
     }
 
-    // Restore cron jobs (already cleared above)
-    let mut restored_cron_jobs = 0;
-    for job in &backup_data.cron_jobs {
-        match state.db.create_cron_job(
-            &job.name,
-            job.description.as_deref(),
-            &job.schedule_type,
-            &job.schedule_value,
-            job.timezone.as_deref(),
-            &job.session_mode,
-            job.message.as_deref(),
-            job.system_event.as_deref(),
-            job.channel_id,
-            job.deliver_to.as_deref(),
-            job.deliver,
-            job.model_override.as_deref(),
-            job.thinking_level.as_deref(),
-            job.timeout_seconds,
-            job.delete_after_run,
-        ) {
-            Ok(_) => restored_cron_jobs += 1,
-            Err(e) => {
-                log::warn!("Failed to restore cron job {}: {}", job.name, e);
-            }
-        }
-    }
-
-    // Restore heartbeat config if present
-    let has_heartbeat = backup_data.heartbeat_config.is_some();
-    if let Some(hb_config) = &backup_data.heartbeat_config {
-        // Get or create the heartbeat config for the channel
-        match state.db.get_or_create_heartbeat_config(hb_config.channel_id) {
-            Ok(existing) => {
-                // Update with restored values
-                if let Err(e) = state.db.update_heartbeat_config(
-                    existing.id,
-                    Some(hb_config.interval_minutes),
-                    Some(&hb_config.target),
-                    hb_config.active_hours_start.as_deref(),
-                    hb_config.active_hours_end.as_deref(),
-                    hb_config.active_days.as_deref(),
-                    Some(hb_config.enabled),
-                ) {
-                    log::warn!("Failed to restore heartbeat config: {}", e);
-                }
-            }
-            Err(e) => {
-                log::warn!("Failed to create heartbeat config for restore: {}", e);
-            }
-        }
-    }
-
-    // Restore channels first (we need ID mapping for channel settings)
+    // Restore channels FIRST (we need ID mapping for cron jobs, heartbeat, and channel settings)
     let mut old_channel_to_new_id: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     let mut restored_channels = 0;
     for channel in &backup_data.channels {
@@ -1385,6 +1333,61 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
             );
         } else {
             restored_channel_settings += 1;
+        }
+    }
+
+    // Restore cron jobs (with mapped channel IDs)
+    let mut restored_cron_jobs = 0;
+    for job in &backup_data.cron_jobs {
+        // Map old channel_id to new channel_id
+        let mapped_channel_id = job.channel_id.and_then(|old_id| old_channel_to_new_id.get(&old_id).copied());
+        match state.db.create_cron_job(
+            &job.name,
+            job.description.as_deref(),
+            &job.schedule_type,
+            &job.schedule_value,
+            job.timezone.as_deref(),
+            &job.session_mode,
+            job.message.as_deref(),
+            job.system_event.as_deref(),
+            mapped_channel_id,
+            job.deliver_to.as_deref(),
+            job.deliver,
+            job.model_override.as_deref(),
+            job.thinking_level.as_deref(),
+            job.timeout_seconds,
+            job.delete_after_run,
+        ) {
+            Ok(_) => restored_cron_jobs += 1,
+            Err(e) => {
+                log::warn!("Failed to restore cron job {}: {}", job.name, e);
+            }
+        }
+    }
+
+    // Restore heartbeat config if present (with mapped channel ID)
+    let has_heartbeat = backup_data.heartbeat_config.is_some();
+    if let Some(hb_config) = &backup_data.heartbeat_config {
+        // Map old channel_id to new channel_id
+        let mapped_channel_id = hb_config.channel_id.and_then(|old_id| old_channel_to_new_id.get(&old_id).copied());
+        match state.db.get_or_create_heartbeat_config(mapped_channel_id) {
+            Ok(existing) => {
+                // Update with restored values
+                if let Err(e) = state.db.update_heartbeat_config(
+                    existing.id,
+                    Some(hb_config.interval_minutes),
+                    Some(&hb_config.target),
+                    hb_config.active_hours_start.as_deref(),
+                    hb_config.active_hours_end.as_deref(),
+                    hb_config.active_days.as_deref(),
+                    Some(hb_config.enabled),
+                ) {
+                    log::warn!("Failed to restore heartbeat config: {}", e);
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to create heartbeat config for restore: {}", e);
+            }
         }
     }
 

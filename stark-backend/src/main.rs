@@ -336,7 +336,7 @@ async fn restore_backup_data(
         }
     }
 
-    // Restore channels (with bot tokens) - create ID mapping for channel settings
+    // Restore channels FIRST (with bot tokens) - need ID mapping for cron jobs, heartbeat, and channel settings
     let mut old_channel_to_new_id: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     let mut restored_channels = 0;
     for channel in &backup_data.channels {
@@ -374,6 +374,82 @@ async fn restore_backup_data(
     }
     if restored_channel_settings > 0 {
         log::info!("[Keystore] Restored {} channel settings", restored_channel_settings);
+    }
+
+    // Enable channels that have auto_start_on_boot=true (so gateway.start_enabled_channels() will start them)
+    let mut auto_enabled_channels = 0;
+    for &new_channel_id in old_channel_to_new_id.values() {
+        let should_auto_start = db
+            .get_channel_setting(new_channel_id, "auto_start_on_boot")
+            .ok()
+            .flatten()
+            .map(|v| v == "true")
+            .unwrap_or(false);
+
+        if should_auto_start {
+            if let Err(e) = db.set_channel_enabled(new_channel_id, true) {
+                log::warn!("[Keystore] Failed to enable auto-start channel {}: {}", new_channel_id, e);
+            } else {
+                auto_enabled_channels += 1;
+            }
+        }
+    }
+    if auto_enabled_channels > 0 {
+        log::info!("[Keystore] Enabled {} channels with auto_start_on_boot", auto_enabled_channels);
+    }
+
+    // Restore cron jobs (with mapped channel IDs)
+    let mut restored_cron_jobs = 0;
+    for job in &backup_data.cron_jobs {
+        // Map old channel_id to new channel_id
+        let mapped_channel_id = job.channel_id.and_then(|old_id| old_channel_to_new_id.get(&old_id).copied());
+        match db.create_cron_job(
+            &job.name,
+            job.description.as_deref(),
+            &job.schedule_type,
+            &job.schedule_value,
+            job.timezone.as_deref(),
+            &job.session_mode,
+            job.message.as_deref(),
+            job.system_event.as_deref(),
+            mapped_channel_id,
+            job.deliver_to.as_deref(),
+            job.deliver,
+            job.model_override.as_deref(),
+            job.thinking_level.as_deref(),
+            job.timeout_seconds,
+            job.delete_after_run,
+        ) {
+            Ok(_) => restored_cron_jobs += 1,
+            Err(e) => log::warn!("[Keystore] Failed to restore cron job {}: {}", job.name, e),
+        }
+    }
+    if restored_cron_jobs > 0 {
+        log::info!("[Keystore] Restored {} cron jobs", restored_cron_jobs);
+    }
+
+    // Restore heartbeat config if present (with mapped channel ID)
+    if let Some(hb_config) = &backup_data.heartbeat_config {
+        // Map old channel_id to new channel_id
+        let mapped_channel_id = hb_config.channel_id.and_then(|old_id| old_channel_to_new_id.get(&old_id).copied());
+        match db.get_or_create_heartbeat_config(mapped_channel_id) {
+            Ok(existing) => {
+                if let Err(e) = db.update_heartbeat_config(
+                    existing.id,
+                    Some(hb_config.interval_minutes),
+                    Some(&hb_config.target),
+                    hb_config.active_hours_start.as_deref(),
+                    hb_config.active_hours_end.as_deref(),
+                    hb_config.active_days.as_deref(),
+                    Some(hb_config.enabled),
+                ) {
+                    log::warn!("[Keystore] Failed to restore heartbeat config: {}", e);
+                } else {
+                    log::info!("[Keystore] Restored heartbeat config (enabled={})", hb_config.enabled);
+                }
+            }
+            Err(e) => log::warn!("[Keystore] Failed to create heartbeat config for restore: {}", e),
+        }
     }
 
     // Restore soul document if present

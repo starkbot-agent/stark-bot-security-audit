@@ -342,9 +342,9 @@ async fn flash_login(
         }
     };
 
-    // Redirect to dashboard with token in URL fragment
+    // Redirect to auth page with token in query params
     // The frontend will extract the token and store it
-    let redirect_url = format!("/#/auth?token={}&flash=true", session.token);
+    let redirect_url = format!("/auth?token={}&flash=true", session.token);
 
     HttpResponse::Found()
         .append_header(("Location", redirect_url))

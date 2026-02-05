@@ -1,11 +1,11 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { BrowserProvider } from 'ethers';
 import { generateChallenge, validateAuth, getConfigStatus, ConfigStatus } from '@/lib/api';
 import Button from '@/components/ui/Button';
 import Card, { CardContent } from '@/components/ui/Card';
 
-type LoginState = 'idle' | 'connecting' | 'signing' | 'verifying';
+type LoginState = 'idle' | 'connecting' | 'signing' | 'verifying' | 'flash';
 
 // Detect if we're on mobile
 function isMobile(): boolean {
@@ -39,6 +39,21 @@ export default function Login() {
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
   const [configStatus, setConfigStatus] = useState<ConfigStatus | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Handle flash login token from URL (e.g., /#/auth?token=xxx&flash=true)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const token = params.get('token');
+    const isFlash = params.get('flash') === 'true';
+
+    if (token && isFlash) {
+      setState('flash');
+      // Store the token and redirect to dashboard
+      localStorage.setItem('stark_token', token);
+      navigate('/dashboard');
+    }
+  }, [location, navigate]);
 
   // Fetch config status on mount to show appropriate warnings
   useEffect(() => {
@@ -65,6 +80,8 @@ export default function Login() {
         return 'Please sign the message in your wallet...';
       case 'verifying':
         return 'Verifying signature...';
+      case 'flash':
+        return 'Logging in via Starkbot Cloud...';
       default:
         return '';
     }

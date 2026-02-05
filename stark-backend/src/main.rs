@@ -534,24 +534,15 @@ async fn main() -> std::io::Result<()> {
 
     // Auto-retrieve from keystore (restore state from cloud backup on fresh instance)
     // This runs before channel auto-start so restored channels can start
-    if let Some(ref private_key) = config.burner_wallet_private_key {
-        auto_retrieve_from_keystore(&db, private_key).await;
+    // NOTE: Skip in Flash mode - Flash has its own state management via Privy
+    let is_flash_mode = std::env::var("FLASH_KEYSTORE_URL").is_ok();
+    if !is_flash_mode {
+        if let Some(ref private_key) = config.burner_wallet_private_key {
+            auto_retrieve_from_keystore(&db, private_key).await;
+        }
+    } else {
+        log::info!("Flash mode detected - skipping keystore auto-retrieval (Flash manages state via Privy)");
     }
-
-    // Initialize Wallet Provider (abstracts standard vs flash mode)
-    log::info!("Initializing wallet provider");
-    let wallet_provider = wallet::create_wallet_provider().await
-        .unwrap_or_else(|e| {
-            log::warn!("Failed to create wallet provider: {}. Wallet features will be disabled.", e);
-            // Create a dummy provider for graceful degradation
-            Arc::new(wallet::EnvWalletProvider::from_private_key(
-                "0x0000000000000000000000000000000000000000000000000000000000000001"
-            ).expect("Failed to create fallback wallet"))
-        });
-    log::info!("Wallet provider initialized: {} mode, address: {}",
-        wallet_provider.mode_name(),
-        wallet_provider.get_address()
-    );
 
     // Initialize Tool Registry with built-in tools
     log::info!("Initializing tool registry");
@@ -574,43 +565,44 @@ async fn main() -> std::io::Result<()> {
     log::info!("Initializing transaction queue manager");
     let tx_queue = Arc::new(TxQueueManager::with_db(db.clone()));
 
-    // Create wallet provider - try Flash mode first, then Standard mode
+    // Initialize Wallet Provider
     // Flash mode: Uses FlashWalletProvider which proxies signing to Privy via Flash backend
     // Standard mode: Uses EnvWalletProvider which signs locally with raw private key
     // If neither is configured, wallet_provider will be None (graceful degradation)
-    let wallet_provider: Option<Arc<dyn wallet::WalletProvider>> =
-        if std::env::var("FLASH_KEYSTORE_URL").is_ok() {
-            // Flash mode - env vars are set, create FlashWalletProvider
-            log::info!("Flash mode detected, initializing FlashWalletProvider...");
-            match tokio::runtime::Handle::current().block_on(wallet::FlashWalletProvider::new()) {
-                Ok(provider) => {
-                    log::info!("Initialized Flash wallet provider: {} (mode: {})",
-                        provider.get_address(), provider.mode_name());
-                    Some(Arc::new(provider) as Arc<dyn wallet::WalletProvider>)
-                }
-                Err(e) => {
-                    log::error!("Failed to create Flash wallet provider: {}", e);
-                    None
-                }
+    log::info!("Initializing wallet provider");
+    let wallet_provider: Option<Arc<dyn wallet::WalletProvider>> = if is_flash_mode {
+        // Flash mode - wallet managed by Privy via Flash control plane
+        // BURNER_WALLET_BOT_PRIVATE_KEY is ignored in this mode
+        log::info!("Flash mode: initializing FlashWalletProvider (Privy embedded wallet)...");
+        match wallet::FlashWalletProvider::new().await {
+            Ok(provider) => {
+                log::info!("Flash wallet provider initialized: {} (mode: {})",
+                    provider.get_address(), provider.mode_name());
+                Some(Arc::new(provider) as Arc<dyn wallet::WalletProvider>)
             }
-        } else if let Some(ref pk) = config.burner_wallet_private_key {
-            // Standard mode - use raw private key
-            log::info!("Standard mode, initializing EnvWalletProvider...");
-            match wallet::EnvWalletProvider::from_private_key(pk) {
-                Ok(provider) => {
-                    log::info!("Initialized wallet provider: {} (mode: {})",
-                        provider.get_address(), provider.mode_name());
-                    Some(Arc::new(provider) as Arc<dyn wallet::WalletProvider>)
-                }
-                Err(e) => {
-                    log::warn!("Failed to create wallet provider: {}", e);
-                    None
-                }
+            Err(e) => {
+                log::error!("Failed to create Flash wallet provider: {}", e);
+                None
             }
-        } else {
-            log::warn!("No wallet provider configured - set FLASH_KEYSTORE_URL (Flash mode) or BURNER_WALLET_BOT_PRIVATE_KEY (Standard mode)");
-            None
-        };
+        }
+    } else if let Some(ref pk) = config.burner_wallet_private_key {
+        // Standard mode - use raw private key from environment
+        log::info!("Standard mode: initializing EnvWalletProvider...");
+        match wallet::EnvWalletProvider::from_private_key(pk) {
+            Ok(provider) => {
+                log::info!("Wallet provider initialized: {} (mode: {})",
+                    provider.get_address(), provider.mode_name());
+                Some(Arc::new(provider) as Arc<dyn wallet::WalletProvider>)
+            }
+            Err(e) => {
+                log::warn!("Failed to create wallet provider: {}. Wallet features disabled.", e);
+                None
+            }
+        }
+    } else {
+        log::warn!("No wallet configured - set FLASH_KEYSTORE_URL (Flash/Privy mode) or BURNER_WALLET_BOT_PRIVATE_KEY (Standard mode)");
+        None
+    };
 
     // Initialize Gateway with tool registry, wallet provider, and tx_queue for channels
     log::info!("Initializing Gateway");

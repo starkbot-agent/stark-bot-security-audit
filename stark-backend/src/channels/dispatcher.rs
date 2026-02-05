@@ -57,6 +57,8 @@ pub struct MessageDispatcher {
     tool_registry: Arc<ToolRegistry>,
     execution_tracker: Arc<ExecutionTracker>,
     burner_wallet_private_key: Option<String>,
+    /// Wallet provider for x402 payments (Flash mode uses this instead of private key)
+    wallet_provider: Option<Arc<dyn crate::wallet::WalletProvider>>,
     context_manager: ContextManager,
     archetype_registry: ArchetypeRegistry,
     /// Memory configuration (simplified - no longer using memory markers)
@@ -149,6 +151,7 @@ impl MessageDispatcher {
             tool_registry,
             execution_tracker,
             burner_wallet_private_key,
+            wallet_provider: None,
             context_manager,
             archetype_registry: ArchetypeRegistry::new(),
             memory_config,
@@ -159,6 +162,12 @@ impl MessageDispatcher {
             validator_registry: None,
             tx_queue: None,
         }
+    }
+
+    /// Set the wallet provider for x402 payments (Flash mode)
+    pub fn with_wallet_provider(mut self, wallet_provider: Arc<dyn crate::wallet::WalletProvider>) -> Self {
+        self.wallet_provider = Some(wallet_provider);
+        self
     }
 
     /// Set the hook manager for lifecycle events
@@ -204,6 +213,7 @@ impl MessageDispatcher {
             tool_registry: Arc::new(ToolRegistry::new()),
             execution_tracker,
             burner_wallet_private_key: None,
+            wallet_provider: None,
             context_manager,
             archetype_registry: ArchetypeRegistry::new(),
             memory_config,
@@ -461,10 +471,12 @@ impl MessageDispatcher {
         self.context_manager.sync_max_context_tokens(session.id, settings.max_context_tokens);
 
         // Create AI client from settings with x402 wallet support
-        let client = match AiClient::from_settings_with_wallet(
-            &settings,
-            self.burner_wallet_private_key.as_deref(),
-        ) {
+        // Prefer wallet_provider (Flash mode) over private key (Standard mode)
+        let client = match if let Some(ref wallet_provider) = self.wallet_provider {
+            AiClient::from_settings_with_wallet_provider(&settings, Some(wallet_provider.clone()))
+        } else {
+            AiClient::from_settings_with_wallet(&settings, self.burner_wallet_private_key.as_deref())
+        } {
             Ok(c) => c.with_broadcaster(Arc::clone(&self.broadcaster), message.channel_id),
             Err(e) => {
                 let error = format!("Failed to create AI client: {}", e);
@@ -695,6 +707,12 @@ impl MessageDispatcher {
         if let Some(ref tx_queue) = self.tx_queue {
             tool_context = tool_context.with_tx_queue(tx_queue.clone());
             log::debug!("[DISPATCH] TxQueueManager attached to tool context");
+        }
+
+        // Add WalletProvider for x402 payments (Flash mode)
+        if let Some(ref wallet_provider) = self.wallet_provider {
+            tool_context = tool_context.with_wallet_provider(wallet_provider.clone());
+            log::debug!("[DISPATCH] WalletProvider attached to tool context ({})", wallet_provider.mode_name());
         }
 
         // Populate tool context with the context bank items scanned earlier

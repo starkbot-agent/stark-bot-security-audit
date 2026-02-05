@@ -532,6 +532,12 @@ impl ToolContext {
         self
     }
 
+    /// Add a WalletProvider to the context (for x402 payments in Flash mode)
+    pub fn with_wallet_provider(mut self, wallet_provider: Arc<dyn WalletProvider>) -> Self {
+        self.wallet_provider = Some(wallet_provider);
+        self
+    }
+
     /// Populate context bank with extracted terms from user input and broadcast update
     pub fn scan_and_set_context_bank(&mut self, text: &str) {
         let items = crate::tools::scan_input(text);

@@ -15,11 +15,11 @@ use crate::tools::rpc_config::{resolve_rpc_from_context, Network, ResolvedRpcCon
 use crate::tools::types::{
     PropertySchema, ToolContext, ToolDefinition, ToolGroup, ToolInputSchema, ToolResult,
 };
-use std::str::FromStr;
 use crate::tx_queue::QueuedTransaction;
+use crate::wallet::WalletProvider;
 use crate::x402::X402EvmRpc;
 use async_trait::async_trait;
-use ethers::abi::{Abi, Function, Token, ParamType};
+use ethers::abi::{Abi, Function, ParamType, Token};
 use ethers::prelude::*;
 use ethers::types::transaction::eip1559::Eip1559TransactionRequest;
 use ethers::types::transaction::eip2718::TypedTransaction;
@@ -27,6 +27,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Signed transaction result for queuing (not broadcast)
@@ -314,33 +316,27 @@ impl Web3FunctionCallTool {
             .map_err(|e| format!("Failed to encode function call: {}", e))
     }
 
-    /// Get wallet from environment
-    fn get_wallet(chain_id: u64) -> Result<LocalWallet, String> {
-        let private_key = crate::config::burner_wallet_private_key()
-            .ok_or("BURNER_WALLET_BOT_PRIVATE_KEY not set")?;
-
-        private_key
-            .parse::<LocalWallet>()
-            .map(|w| w.with_chain_id(chain_id))
-            .map_err(|e| format!("Invalid private key: {}", e))
+    /// Get chain ID for a network
+    fn get_chain_id(network: &str) -> u64 {
+        match network {
+            "mainnet" => 1,
+            "polygon" => 137,
+            "arbitrum" => 42161,
+            "optimism" => 10,
+            _ => 8453, // Base
+        }
     }
 
-    /// Get private key from environment
-    fn get_private_key() -> Result<String, String> {
-        crate::config::burner_wallet_private_key()
-            .ok_or_else(|| "BURNER_WALLET_BOT_PRIVATE_KEY not set".to_string())
-    }
-
-    /// Execute a read-only call
+    /// Execute a read-only call using WalletProvider
     async fn call_function(
         network: &str,
         to: Address,
         calldata: Vec<u8>,
         rpc_config: &ResolvedRpcConfig,
+        wallet_provider: &Arc<dyn WalletProvider>,
     ) -> Result<Vec<u8>, String> {
-        let private_key = Self::get_private_key()?;
-        let rpc = X402EvmRpc::new_with_config(
-            &private_key,
+        let rpc = X402EvmRpc::new_with_wallet_provider(
+            wallet_provider.clone(),
             network,
             Some(rpc_config.url.clone()),
             rpc_config.use_x402,
@@ -349,26 +345,27 @@ impl Web3FunctionCallTool {
         rpc.call(to, &calldata).await
     }
 
-    /// Sign a transaction for queuing (does NOT broadcast)
+    /// Sign a transaction for queuing using WalletProvider (works in both Standard and Flash mode)
     async fn sign_transaction_for_queue(
         network: &str,
         to: Address,
         calldata: Vec<u8>,
         value: U256,
         rpc_config: &ResolvedRpcConfig,
+        wallet_provider: &Arc<dyn WalletProvider>,
     ) -> Result<SignedTxForQueue, String> {
-        let private_key = Self::get_private_key()?;
-        let rpc = X402EvmRpc::new_with_config(
-            &private_key,
+        let rpc = X402EvmRpc::new_with_wallet_provider(
+            wallet_provider.clone(),
             network,
             Some(rpc_config.url.clone()),
             rpc_config.use_x402,
         )?;
-        let chain_id = rpc.chain_id();
+        let chain_id = Self::get_chain_id(network);
 
-        let wallet = Self::get_wallet(chain_id)?;
-        let from_address = wallet.address();
-        let from_str = format!("{:?}", from_address);
+        // Get wallet address from WalletProvider
+        let from_str = wallet_provider.get_address();
+        let from_address: Address = from_str.parse()
+            .map_err(|_| format!("Invalid wallet address: {}", from_str))?;
         let to_str = format!("{:?}", to);
 
         // Get nonce
@@ -398,9 +395,9 @@ impl Web3FunctionCallTool {
             .max_priority_fee_per_gas(priority_fee)
             .chain_id(chain_id);
 
-        // Sign the transaction
+        // Sign using WalletProvider (works in both Standard and Flash mode)
         let typed_tx: TypedTransaction = tx.into();
-        let signature = wallet
+        let signature = wallet_provider
             .sign_transaction(&typed_tx)
             .await
             .map_err(|e| format!("Failed to sign transaction: {}", e))?;
@@ -723,6 +720,12 @@ impl Tool for Web3FunctionCallTool {
             }
         }
 
+        // Get wallet provider (required for signing and x402 payments)
+        let wallet_provider = match &context.wallet_provider {
+            Some(wp) => wp,
+            None => return ToolResult::error("Wallet not configured. Cannot execute web3 calls."),
+        };
+
         // Resolve RPC configuration from context (respects custom RPC settings)
         let rpc_config = resolve_rpc_from_context(&context.extra, network.as_ref());
 
@@ -733,7 +736,7 @@ impl Tool for Web3FunctionCallTool {
 
         if params.call_only {
             // Read-only call
-            match Self::call_function(network.as_ref(), contract, calldata, &rpc_config).await {
+            match Self::call_function(network.as_ref(), contract, calldata, &rpc_config, wallet_provider).await {
                 Ok(result) => {
                     let decoded = self.decode_return(function, &result)
                         .unwrap_or_else(|_| json!(format!("0x{}", hex::encode(&result))));
@@ -784,13 +787,14 @@ impl Tool for Web3FunctionCallTool {
                 None => return ToolResult::error("Transaction queue not available. Contact administrator."),
             };
 
-            // Sign the transaction (but don't broadcast)
+            // Sign the transaction using WalletProvider (works in both Standard and Flash mode)
             match Self::sign_transaction_for_queue(
                 network.as_ref(),
                 contract,
                 calldata,
                 tx_value,
                 &rpc_config,
+                wallet_provider,
             ).await {
                 Ok(signed) => {
                     // Generate UUID for this queued transaction

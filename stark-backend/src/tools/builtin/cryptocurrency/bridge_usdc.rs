@@ -24,6 +24,7 @@ use crate::tools::types::{
     PropertySchema, ToolContext, ToolDefinition, ToolGroup, ToolInputSchema, ToolResult,
 };
 use crate::tx_queue::QueuedTransaction;
+use crate::wallet::WalletProvider;
 use crate::x402::X402EvmRpc;
 use async_trait::async_trait;
 use ethers::prelude::*;
@@ -32,6 +33,7 @@ use ethers::types::transaction::eip2718::TypedTransaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Across Protocol API base URL
@@ -206,32 +208,6 @@ impl BridgeUsdcTool {
         Ok(raw)
     }
 
-    /// Get wallet address from private key
-    fn get_wallet_address() -> Result<String, String> {
-        let pk = crate::config::burner_wallet_private_key().ok_or_else(|| {
-            "BURNER_WALLET_BOT_PRIVATE_KEY not set. Required for bridging.".to_string()
-        })?;
-
-        let pk_clean = pk.strip_prefix("0x").unwrap_or(&pk);
-        let wallet: LocalWallet = pk_clean
-            .parse()
-            .map_err(|e| format!("Invalid private key: {}", e))?;
-
-        Ok(format!("{:?}", wallet.address()))
-    }
-
-    /// Get wallet for signing
-    fn get_wallet(chain_id: u64) -> Result<LocalWallet, String> {
-        let pk = crate::config::burner_wallet_private_key()
-            .ok_or("BURNER_WALLET_BOT_PRIVATE_KEY not set")?;
-
-        let pk_clean = pk.strip_prefix("0x").unwrap_or(&pk);
-        pk_clean
-            .parse::<LocalWallet>()
-            .map(|w| w.with_chain_id(chain_id))
-            .map_err(|e| format!("Invalid private key: {}", e))
-    }
-
     /// Map chain name to network name for RPC config
     fn chain_to_network(chain: &str) -> &str {
         match chain.to_lowercase().as_str() {
@@ -244,7 +220,7 @@ impl BridgeUsdcTool {
         }
     }
 
-    /// Sign a transaction for queueing
+    /// Sign a transaction for queueing using WalletProvider (works in both Standard and Flash mode)
     async fn sign_transaction_for_queue(
         chain_id: u64,
         network: &str,
@@ -252,19 +228,19 @@ impl BridgeUsdcTool {
         value: U256,
         data: Vec<u8>,
         rpc_config: &ResolvedRpcConfig,
+        wallet_provider: &Arc<dyn WalletProvider>,
     ) -> Result<SignedTxForQueue, String> {
-        let private_key = crate::config::burner_wallet_private_key()
-            .ok_or("BURNER_WALLET_BOT_PRIVATE_KEY not set")?;
-
-        let rpc = X402EvmRpc::new_with_config(
-            &private_key,
+        let rpc = X402EvmRpc::new_with_wallet_provider(
+            wallet_provider.clone(),
             network,
             Some(rpc_config.url.clone()),
             rpc_config.use_x402,
         )?;
 
-        let wallet = Self::get_wallet(chain_id)?;
-        let from_address = wallet.address();
+        // Get wallet address from WalletProvider
+        let from_str = wallet_provider.get_address();
+        let from_address: Address = from_str.parse()
+            .map_err(|_| format!("Invalid wallet address: {}", from_str))?;
 
         // Get nonce
         let nonce = rpc.get_transaction_count(from_address).await?;
@@ -301,9 +277,9 @@ impl BridgeUsdcTool {
             .max_priority_fee_per_gas(priority_fee)
             .chain_id(chain_id);
 
-        // Sign
+        // Sign using WalletProvider (works in both Standard and Flash mode)
         let typed_tx: TypedTransaction = tx.into();
-        let signature = wallet
+        let signature = wallet_provider
             .sign_transaction(&typed_tx)
             .await
             .map_err(|e| format!("Failed to sign transaction: {}", e))?;
@@ -312,7 +288,7 @@ impl BridgeUsdcTool {
         let signed_tx_hex = format!("0x{}", hex::encode(&signed_tx));
 
         Ok(SignedTxForQueue {
-            from: format!("{:?}", from_address),
+            from: from_str,
             to: format!("{:?}", to),
             value: value.to_string(),
             data: format!("0x{}", hex::encode(&data)),
@@ -434,11 +410,14 @@ impl Tool for BridgeUsdcTool {
             Err(e) => return ToolResult::error(e),
         };
 
-        // Get wallet address
-        let wallet_address = match Self::get_wallet_address() {
-            Ok(addr) => addr,
-            Err(e) => return ToolResult::error(e),
+        // Get wallet provider (required for signing)
+        let wallet_provider = match &context.wallet_provider {
+            Some(wp) => wp,
+            None => return ToolResult::error("Wallet not configured. Cannot bridge tokens."),
         };
+
+        // Get wallet address from WalletProvider
+        let wallet_address = wallet_provider.get_address();
 
         // Parse amount
         let amount_raw = match Self::parse_usdc_amount(&params.amount) {
@@ -582,6 +561,7 @@ impl Tool for BridgeUsdcTool {
                 approval_value,
                 approval_data,
                 &rpc_config,
+                wallet_provider,
             )
             .await
             {
@@ -634,14 +614,9 @@ impl Tool for BridgeUsdcTool {
 
         // For bridge tx, we need to account for approval nonce if it was queued
         let signed_bridge = if current_nonce_offset > 0 {
-            // Re-sign with incremented nonce
-            let private_key = match crate::config::burner_wallet_private_key() {
-                Some(pk) => pk,
-                None => return ToolResult::error("BURNER_WALLET_BOT_PRIVATE_KEY not set"),
-            };
-
-            let rpc = match X402EvmRpc::new_with_config(
-                &private_key,
+            // Re-sign with incremented nonce using WalletProvider
+            let rpc = match X402EvmRpc::new_with_wallet_provider(
+                wallet_provider.clone(),
                 network,
                 Some(rpc_config.url.clone()),
                 rpc_config.use_x402,
@@ -650,11 +625,12 @@ impl Tool for BridgeUsdcTool {
                 Err(e) => return ToolResult::error(format!("Failed to create RPC: {}", e)),
             };
 
-            let wallet = match Self::get_wallet(from_chain_id) {
-                Ok(w) => w,
-                Err(e) => return ToolResult::error(e),
+            // Get wallet address from WalletProvider
+            let from_str = wallet_provider.get_address();
+            let from_address: Address = match from_str.parse() {
+                Ok(a) => a,
+                Err(_) => return ToolResult::error(format!("Invalid wallet address: {}", from_str)),
             };
-            let from_address = wallet.address();
 
             let base_nonce = match rpc.get_transaction_count(from_address).await {
                 Ok(n) => n,
@@ -689,8 +665,9 @@ impl Tool for BridgeUsdcTool {
                 .max_priority_fee_per_gas(priority_fee)
                 .chain_id(from_chain_id);
 
+            // Sign using WalletProvider (works in both Standard and Flash mode)
             let typed_tx: TypedTransaction = tx.into();
-            let signature = match wallet.sign_transaction(&typed_tx).await {
+            let signature = match wallet_provider.sign_transaction(&typed_tx).await {
                 Ok(s) => s,
                 Err(e) => {
                     return ToolResult::error(format!("Failed to sign bridge transaction: {}", e))
@@ -700,7 +677,7 @@ impl Tool for BridgeUsdcTool {
             let signed_tx = typed_tx.rlp_signed(&signature);
 
             SignedTxForQueue {
-                from: format!("{:?}", from_address),
+                from: from_str,
                 to: format!("{:?}", bridge_to),
                 value: bridge_value.to_string(),
                 data: format!("0x{}", hex::encode(&bridge_data)),
@@ -719,6 +696,7 @@ impl Tool for BridgeUsdcTool {
                 bridge_value,
                 bridge_data,
                 &rpc_config,
+                wallet_provider,
             )
             .await
             {

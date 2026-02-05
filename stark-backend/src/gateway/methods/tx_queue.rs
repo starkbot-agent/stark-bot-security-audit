@@ -6,6 +6,7 @@ use crate::gateway::events::EventBroadcaster;
 use crate::gateway::protocol::{GatewayEvent, RpcError};
 use crate::tools::rpc_config::resolve_rpc_from_network;
 use crate::tx_queue::{QueuedTxStatus, TxQueueManager};
+use crate::wallet::WalletProvider;
 use crate::x402::X402EvmRpc;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -24,6 +25,7 @@ pub async fn handle_tx_queue_confirm(
     params: TxQueueParams,
     tx_queue: Arc<TxQueueManager>,
     broadcaster: Arc<EventBroadcaster>,
+    wallet_provider: Option<Arc<dyn WalletProvider>>,
 ) -> Result<Value, RpcError> {
     log::info!("[tx_queue.confirm] Confirming transaction {}", params.uuid);
 
@@ -39,16 +41,16 @@ pub async fn handle_tx_queue_confirm(
     // Mark broadcasting
     tx_queue.mark_broadcasting(&params.uuid);
 
-    // Get private key
-    let private_key = crate::config::burner_wallet_private_key()
+    // Get wallet provider for x402 payments
+    let wallet_provider = wallet_provider
         .ok_or_else(|| RpcError::new(-32000, "Wallet not configured".to_string()))?;
 
     // Resolve RPC configuration
     let rpc_config = resolve_rpc_from_network(&tx.network);
 
-    // Initialize RPC client
-    let rpc = X402EvmRpc::new_with_config(
-        &private_key,
+    // Initialize RPC client with WalletProvider (works in both Standard and Flash mode)
+    let rpc = X402EvmRpc::new_with_wallet_provider(
+        wallet_provider,
         &tx.network,
         Some(rpc_config.url.clone()),
         rpc_config.use_x402,

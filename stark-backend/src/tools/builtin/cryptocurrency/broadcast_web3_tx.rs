@@ -2,8 +2,8 @@
 //!
 //! Takes a UUID from web3_tx and broadcasts the signed transaction to the network.
 
-use crate::gateway::protocol::GatewayEvent;
 use super::web3_tx::SendEthTool;
+use crate::gateway::protocol::GatewayEvent;
 use crate::tools::registry::Tool;
 use crate::tools::rpc_config::resolve_rpc_from_context;
 use crate::tools::types::{
@@ -60,12 +60,6 @@ impl BroadcastWeb3TxTool {
                 group: ToolGroup::Finance,
             },
         }
-    }
-
-    /// Get the private key from environment
-    fn get_private_key() -> Result<String, String> {
-        crate::config::burner_wallet_private_key()
-            .ok_or_else(|| "BURNER_WALLET_BOT_PRIVATE_KEY not set".to_string())
     }
 }
 
@@ -247,17 +241,19 @@ impl Tool for BroadcastWeb3TxTool {
             uuid, queued_tx.network, rpc_config.url
         );
 
-        // Initialize RPC client
-        let private_key = match Self::get_private_key() {
-            Ok(pk) => pk,
-            Err(e) => {
-                tx_queue.mark_failed(&uuid, &e);
-                return ToolResult::error(e);
+        // Get wallet provider for x402 payments during RPC calls
+        let wallet_provider = match &context.wallet_provider {
+            Some(wp) => wp,
+            None => {
+                let err = "Wallet not configured. Cannot broadcast transactions.";
+                tx_queue.mark_failed(&uuid, err);
+                return ToolResult::error(err);
             }
         };
 
-        let rpc = match X402EvmRpc::new_with_config(
-            &private_key,
+        // Initialize RPC client with WalletProvider (works in both Standard and Flash mode)
+        let rpc = match X402EvmRpc::new_with_wallet_provider(
+            wallet_provider.clone(),
             &queued_tx.network,
             Some(rpc_config.url.clone()),
             rpc_config.use_x402,

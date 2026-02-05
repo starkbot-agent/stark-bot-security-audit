@@ -736,6 +736,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(Arc::clone(&chan_mgr)))
             .app_data(web::Data::new(Arc::clone(&bcast)))
             .app_data(web::Data::new(Arc::clone(&tx_q)))
+            .app_data(web::Data::new(wallet_prov.clone()))
             .wrap(Logger::default())
             .wrap(cors)
             .configure(controllers::health::config_routes)

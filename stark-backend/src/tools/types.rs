@@ -533,7 +533,12 @@ impl ToolContext {
     }
 
     /// Add a WalletProvider to the context (for x402 payments in Flash mode)
+    /// Also pre-populates the wallet_address register for tools that need it
     pub fn with_wallet_provider(mut self, wallet_provider: Arc<dyn WalletProvider>) -> Self {
+        // Pre-populate wallet_address register so tools don't need to compute it
+        let wallet_address = wallet_provider.get_address();
+        self.registers.set("wallet_address", serde_json::json!(wallet_address), "wallet_provider");
+
         self.wallet_provider = Some(wallet_provider);
         self
     }

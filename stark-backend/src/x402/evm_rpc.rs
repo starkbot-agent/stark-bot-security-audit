@@ -6,9 +6,11 @@
 use ethers::types::{Address, Bytes, H256, U256, U64};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::client::X402Client;
+use crate::wallet::WalletProvider;
 
 /// Default RPC endpoints for defirelay (used when no custom config)
 const DEFAULT_RPC_BASE: &str = "https://rpc.defirelay.com/rpc/light/base";
@@ -83,6 +85,23 @@ impl X402EvmRpc {
         use_x402: bool,
     ) -> Result<Self, String> {
         let client = X402Client::from_private_key(private_key)?;
+        Ok(Self {
+            client,
+            network: network.to_string(),
+            rpc_url,
+            use_x402,
+        })
+    }
+
+    /// Create a new X402 EVM RPC client with a WalletProvider (for Flash mode)
+    /// This uses the WalletProvider for x402 payment signing instead of a raw private key
+    pub fn new_with_wallet_provider(
+        wallet_provider: Arc<dyn WalletProvider>,
+        network: &str,
+        rpc_url: Option<String>,
+        use_x402: bool,
+    ) -> Result<Self, String> {
+        let client = X402Client::new(wallet_provider)?;
         Ok(Self {
             client,
             network: network.to_string(),

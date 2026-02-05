@@ -8,6 +8,7 @@ use crate::gateway::events::EventBroadcaster;
 use crate::gateway::methods;
 use crate::gateway::protocol::{ChannelIdParams, RpcError, RpcRequest, RpcResponse};
 use crate::tx_queue::TxQueueManager;
+use crate::wallet::WalletProvider;
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_ws::AggregatedMessage;
 use futures_util::StreamExt;
@@ -33,6 +34,7 @@ pub async fn ws_handler(
     channel_manager: web::Data<Arc<ChannelManager>>,
     broadcaster: web::Data<Arc<EventBroadcaster>>,
     tx_queue: web::Data<Arc<TxQueueManager>>,
+    wallet_provider: web::Data<Option<Arc<dyn WalletProvider>>>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let (response, session, msg_stream) = actix_ws::handle(&req, stream)?;
 
@@ -41,6 +43,7 @@ pub async fn ws_handler(
     let channel_manager = channel_manager.get_ref().clone();
     let broadcaster = broadcaster.get_ref().clone();
     let tx_queue = tx_queue.get_ref().clone();
+    let wallet_provider = wallet_provider.get_ref().clone();
 
     actix_web::rt::spawn(handle_ws_connection(
         session,
@@ -49,6 +52,7 @@ pub async fn ws_handler(
         channel_manager,
         broadcaster,
         tx_queue,
+        wallet_provider,
     ));
 
     Ok(response)
@@ -61,6 +65,7 @@ async fn handle_ws_connection(
     channel_manager: Arc<ChannelManager>,
     broadcaster: Arc<EventBroadcaster>,
     tx_queue: Arc<TxQueueManager>,
+    wallet_provider: Option<Arc<dyn WalletProvider>>,
 ) {
     log::info!("New Actix WebSocket connection");
 
@@ -159,7 +164,7 @@ async fn handle_ws_connection(
         match msg_result {
             Ok(AggregatedMessage::Text(text)) => {
                 log::debug!("[DATAGRAM] <<< FROM AGENT (RPC request):\n{}", text);
-                let response = process_request(&text, &db, &channel_manager, &broadcaster, &tx_queue).await;
+                let response = process_request(&text, &db, &channel_manager, &broadcaster, &tx_queue, &wallet_provider).await;
                 if let Ok(json) = serde_json::to_string(&response) {
                     let _ = tx.send(json).await;
                 }
@@ -310,6 +315,7 @@ async fn process_request(
     channel_manager: &Arc<ChannelManager>,
     broadcaster: &Arc<EventBroadcaster>,
     tx_queue: &Arc<TxQueueManager>,
+    wallet_provider: &Option<Arc<dyn WalletProvider>>,
 ) -> RpcResponse {
     let request: RpcRequest = match serde_json::from_str(text) {
         Ok(req) => req,
@@ -320,7 +326,7 @@ async fn process_request(
 
     let id = request.id.clone();
 
-    let result = dispatch_method(&request, db, channel_manager, broadcaster, tx_queue).await;
+    let result = dispatch_method(&request, db, channel_manager, broadcaster, tx_queue, wallet_provider).await;
 
     match result {
         Ok(value) => RpcResponse::success(id, value),
@@ -334,6 +340,7 @@ async fn dispatch_method(
     channel_manager: &Arc<ChannelManager>,
     broadcaster: &Arc<EventBroadcaster>,
     tx_queue: &Arc<TxQueueManager>,
+    wallet_provider: &Option<Arc<dyn WalletProvider>>,
 ) -> Result<serde_json::Value, RpcError> {
     match request.method.as_str() {
         "ping" => methods::handle_ping().await,
@@ -359,7 +366,7 @@ async fn dispatch_method(
         "tx_queue.confirm" => {
             let params: methods::TxQueueParams = serde_json::from_value(request.params.clone())
                 .map_err(|e| RpcError::invalid_params(format!("Invalid params: {}", e)))?;
-            methods::handle_tx_queue_confirm(params, tx_queue.clone(), broadcaster.clone()).await
+            methods::handle_tx_queue_confirm(params, tx_queue.clone(), broadcaster.clone(), wallet_provider.clone()).await
         }
         "tx_queue.deny" => {
             let params: methods::TxQueueParams = serde_json::from_value(request.params.clone())

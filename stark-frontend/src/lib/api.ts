@@ -5,6 +5,8 @@ export interface ConfigStatus {
   login_configured: boolean;
   burner_wallet_configured: boolean;
   guest_dashboard_enabled: boolean;
+  wallet_address: string;
+  wallet_mode: string;
 }
 
 export async function getConfigStatus(): Promise<ConfigStatus> {

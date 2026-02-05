@@ -113,14 +113,15 @@ impl DiscordHooksConfig {
     }
 
     /// Check if a user is admin - checks explicit admin_user_ids first,
-    /// then falls back to Discord's Administrator permission if no admins configured
+    /// then also checks Discord's Administrator permission as fallback
     pub async fn is_admin(&self, user_id: &str, msg: &Message, ctx: &Context) -> bool {
         // First check explicit admin user IDs
-        if !self.admin_user_ids.is_empty() {
-            return self.admin_user_ids.contains(user_id);
+        if self.admin_user_ids.contains(user_id) {
+            return true;
         }
 
-        // Fallback: check Discord's Administrator permission
+        // Also check Discord's Administrator permission
+        // This ensures server admins always have access even if not in explicit list
         Self::has_discord_admin_permission(msg, ctx).await
     }
 

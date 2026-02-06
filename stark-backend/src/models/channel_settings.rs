@@ -60,6 +60,8 @@ pub enum ChannelSettingKey {
     TwitterReplyChance,
     /// Twitter: Maximum number of mentions to reply to per hour
     TwitterMaxMentionsPerHour,
+    /// Twitter: Admin X account numeric user ID — tweets from this account bypass safe mode
+    TwitterAdminXAccount,
 }
 
 impl ChannelSettingKey {
@@ -78,6 +80,7 @@ impl ChannelSettingKey {
             Self::TwitterPro => "X Premium (Pro)",
             Self::TwitterReplyChance => "Reply Chance",
             Self::TwitterMaxMentionsPerHour => "Max Replies Per Hour",
+            Self::TwitterAdminXAccount => "Admin X User ID (Optional)",
         }
     }
 
@@ -135,6 +138,13 @@ impl ChannelSettingKey {
                 "Maximum number of mentions to reply to per hour. Once the limit is reached, \
                  remaining mentions are skipped until the next hour. Set to 0 for unlimited."
             }
+            Self::TwitterAdminXAccount => {
+                "Numeric X (Twitter) user ID of an admin account. Tweets from this account \
+                 will use a standard channel with full tool access instead of the restricted safe mode. \
+                 Use the numeric ID (not the handle) for security — handles can be changed or spoofed. \
+                 Find your ID at tweeterid.com. \
+                 WARNING: This account will have full agent access — only set this to an account you control."
+            }
         }
     }
 
@@ -153,6 +163,7 @@ impl ChannelSettingKey {
             Self::TwitterPro => SettingInputType::Toggle,
             Self::TwitterReplyChance => SettingInputType::Select,
             Self::TwitterMaxMentionsPerHour => SettingInputType::Number,
+            Self::TwitterAdminXAccount => SettingInputType::Text,
         }
     }
 
@@ -171,6 +182,7 @@ impl ChannelSettingKey {
             Self::TwitterPro => "",
             Self::TwitterReplyChance => "",
             Self::TwitterMaxMentionsPerHour => "0",
+            Self::TwitterAdminXAccount => "1234567890123456789",
         }
     }
 
@@ -204,6 +216,7 @@ impl ChannelSettingKey {
             Self::TwitterPro => "false",
             Self::TwitterReplyChance => "100",
             Self::TwitterMaxMentionsPerHour => "0",
+            Self::TwitterAdminXAccount => "",
         }
     }
 
@@ -336,6 +349,7 @@ pub fn get_settings_for_channel_type(channel_type: ChannelType) -> Vec<ChannelSe
             ChannelSettingKey::TwitterPro.into(),
             ChannelSettingKey::TwitterReplyChance.into(),
             ChannelSettingKey::TwitterMaxMentionsPerHour.into(),
+            ChannelSettingKey::TwitterAdminXAccount.into(),
         ],
     };
 

@@ -200,8 +200,47 @@ export interface SkillInfo {
   metadata?: string;
 }
 
+export interface SkillDetail {
+  name: string;
+  description: string;
+  version: string;
+  source: string;
+  path: string;
+  enabled: boolean;
+  requires_tools: string[];
+  requires_binaries: string[];
+  missing_binaries: string[];
+  tags: string[];
+  arguments: Array<{ name: string; description: string; required: boolean; default?: string }>;
+  prompt_template: string;
+  scripts?: Array<{ name: string; language: string }>;
+  homepage?: string;
+  metadata?: string;
+}
+
+export interface SkillDetailResponse {
+  success: boolean;
+  skill?: SkillDetail;
+  error?: string;
+}
+
 export async function getSkills(): Promise<SkillInfo[]> {
   return apiFetch('/skills');
+}
+
+export async function getSkillDetail(name: string): Promise<SkillDetail> {
+  const response = await apiFetch<SkillDetailResponse>(`/skills/${encodeURIComponent(name)}`);
+  if (!response.success || !response.skill) {
+    throw new Error(response.error || 'Failed to get skill detail');
+  }
+  return response.skill;
+}
+
+export async function updateSkillBody(name: string, body: string): Promise<void> {
+  await apiFetch(`/skills/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ body }),
+  });
 }
 
 export async function uploadSkill(file: File): Promise<void> {
@@ -841,6 +880,8 @@ export interface BackupResponse {
   cron_job_count?: number;
   channel_count?: number;
   channel_setting_count?: number;
+  discord_registration_count?: number;
+  skill_count?: number;
   has_settings?: boolean;
   has_heartbeat?: boolean;
   has_soul?: boolean;
@@ -862,6 +903,8 @@ export interface CloudBackupPreview {
   cron_job_count?: number;
   channel_count?: number;
   channel_setting_count?: number;
+  discord_registration_count?: number;
+  skill_count?: number;
   has_settings?: boolean;
   has_heartbeat?: boolean;
   has_soul?: boolean;

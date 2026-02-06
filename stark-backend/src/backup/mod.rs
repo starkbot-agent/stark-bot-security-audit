@@ -51,6 +51,9 @@ pub struct BackupData {
     /// Discord user registrations (discord_user_id → public_address mappings)
     #[serde(default)]
     pub discord_registrations: Vec<DiscordRegistrationEntry>,
+    /// Skills (custom agent skills)
+    #[serde(default)]
+    pub skills: Vec<SkillEntry>,
 }
 
 impl BackupData {
@@ -71,6 +74,7 @@ impl BackupData {
             channels: Vec::new(),
             soul_document: None,
             discord_registrations: Vec::new(),
+            skills: Vec::new(),
         }
     }
 
@@ -87,6 +91,7 @@ impl BackupData {
             + self.channels.len()
             + if self.soul_document.is_some() { 1 } else { 0 }
             + self.discord_registrations.len()
+            + self.skills.len()
     }
 }
 
@@ -200,6 +205,43 @@ pub struct DiscordRegistrationEntry {
     pub discord_username: Option<String>,
     pub public_address: String,
     pub registered_at: Option<String>,
+}
+
+/// Skill entry in backup
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    pub body: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<String>,
+    pub enabled: bool,
+    #[serde(default)]
+    pub requires_tools: Vec<String>,
+    #[serde(default)]
+    pub requires_binaries: Vec<String>,
+    /// Arguments serialized as JSON string
+    #[serde(default)]
+    pub arguments: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_type: Option<String>,
+    #[serde(default)]
+    pub scripts: Vec<SkillScriptEntry>,
+}
+
+/// Skill script entry in backup
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillScriptEntry {
+    pub name: String,
+    pub code: String,
+    pub language: String,
 }
 
 /// Options for what to include in a backup

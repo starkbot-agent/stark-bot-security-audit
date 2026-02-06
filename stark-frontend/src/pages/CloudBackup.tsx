@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Cloud, Upload, Download, Shield, AlertCircle, CheckCircle, X, Key, Brain, Settings, Link2, RefreshCw, Clock, AlertTriangle, Heart, MessageSquare, Sparkles } from 'lucide-react';
+import { Cloud, Upload, Download, Shield, AlertCircle, CheckCircle, X, Key, Brain, Settings, Link2, RefreshCw, Clock, AlertTriangle, Heart, MessageSquare, Sparkles, Zap } from 'lucide-react';
 import Card, { CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import { backupKeysToCloud, restoreKeysFromCloud, previewCloudBackup, CloudBackupPreview } from '@/lib/api';
@@ -64,7 +64,7 @@ export default function CloudBackup() {
       const result = await backupKeysToCloud();
       setMessage({
         type: 'success',
-        text: `Backup complete! ${result.key_count || 0} keys, ${result.node_count || 0} mind nodes, ${result.connection_count || 0} connections, ${result.cron_job_count || 0} cron jobs, ${result.channel_count || 0} channels${result.has_settings ? ', settings' : ''}${result.has_heartbeat ? ', heartbeat' : ''}${result.has_soul ? ', soul' : ''}`
+        text: `Backup complete! ${result.key_count || 0} keys, ${result.node_count || 0} mind nodes, ${result.connection_count || 0} connections, ${result.cron_job_count || 0} cron jobs, ${result.channel_count || 0} channels, ${result.skill_count || 0} skills${result.has_settings ? ', settings' : ''}${result.has_heartbeat ? ', heartbeat' : ''}${result.has_soul ? ', soul' : ''}`
       });
       setNoBackupWarning(false);
       // Refresh preview after successful backup
@@ -89,7 +89,7 @@ export default function CloudBackup() {
       const result = await restoreKeysFromCloud();
       setMessage({
         type: 'success',
-        text: `Restore complete! ${result.key_count || 0} keys, ${result.node_count || 0} mind nodes, ${result.connection_count || 0} connections, ${result.cron_job_count || 0} cron jobs, ${result.channel_count || 0} channels${result.has_settings ? ', settings' : ''}${result.has_heartbeat ? ', heartbeat' : ''}${result.has_soul ? ', soul' : ''}`
+        text: `Restore complete! ${result.key_count || 0} keys, ${result.node_count || 0} mind nodes, ${result.connection_count || 0} connections, ${result.cron_job_count || 0} cron jobs, ${result.channel_count || 0} channels, ${result.skill_count || 0} skills${result.has_settings ? ', settings' : ''}${result.has_heartbeat ? ', heartbeat' : ''}${result.has_soul ? ', soul' : ''}`
       });
     } catch (err) {
       setMessage({ type: 'error', text: formatKeystoreError(err) });
@@ -297,6 +297,15 @@ export default function CloudBackup() {
                       {previewData.has_soul ? 'Yes' : 'No'}
                     </span>
                   </div>
+                  {(previewData.skill_count ?? 0) > 0 && (
+                    <div className="p-3 bg-slate-900/50 rounded-lg border border-slate-700">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Zap className="w-4 h-4 text-amber-400" />
+                        <span className="text-xs text-slate-400">Skills</span>
+                      </div>
+                      <span className="text-xl font-bold text-white">{previewData.skill_count}</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* API Keys List */}
@@ -393,6 +402,13 @@ export default function CloudBackup() {
                   <div>
                     <p className="text-slate-300 font-medium">Soul Document</p>
                     <p className="text-slate-400 text-xs">Agent personality and core truths</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Zap className="w-4 h-4 text-amber-400 mt-0.5" />
+                  <div>
+                    <p className="text-slate-300 font-medium">Skills</p>
+                    <p className="text-slate-400 text-xs">Custom agent skills and scripts</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-2">
@@ -547,6 +563,12 @@ export default function CloudBackup() {
                   <div className="flex items-center gap-2 p-2 bg-slate-900/50 rounded-lg">
                     <Sparkles className="w-4 h-4 text-yellow-400" />
                     <span className="text-sm text-slate-300">Soul Document</span>
+                  </div>
+                )}
+                {(previewData.skill_count ?? 0) > 0 && (
+                  <div className="flex items-center gap-2 p-2 bg-slate-900/50 rounded-lg">
+                    <Zap className="w-4 h-4 text-amber-400" />
+                    <span className="text-sm text-slate-300">{previewData.skill_count} Skills</span>
                   </div>
                 )}
               </div>

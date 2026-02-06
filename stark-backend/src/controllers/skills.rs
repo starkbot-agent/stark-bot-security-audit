@@ -143,6 +143,11 @@ pub struct SetEnabledRequest {
     pub enabled: bool,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateSkillRequest {
+    pub body: String,
+}
+
 #[derive(Serialize)]
 pub struct OperationResponse {
     pub success: bool,
@@ -179,6 +184,7 @@ pub fn config(cfg: &mut web::ServiceConfig) {
             .route("/upload", web::post().to(upload_skill))
             .route("/reload", web::post().to(reload_skills))
             .route("/{name}", web::get().to(get_skill))
+            .route("/{name}", web::put().to(update_skill))
             .route("/{name}", web::delete().to(delete_skill))
             .route("/{name}/enabled", web::put().to(set_enabled))
             .route("/{name}/scripts", web::get().to(get_skill_scripts)),
@@ -423,6 +429,83 @@ async fn upload_skill(
                 error: Some(e),
             })
         }
+    }
+}
+
+async fn update_skill(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+    body: web::Json<UpdateSkillRequest>,
+) -> impl Responder {
+    if let Err(resp) = validate_session_from_request(&state, &req) {
+        return resp;
+    }
+
+    let name = path.into_inner();
+
+    // Get the existing skill
+    let existing = match state.skill_registry.get(&name) {
+        Some(skill) => skill,
+        None => {
+            return HttpResponse::NotFound().json(SkillDetailResponse {
+                success: false,
+                skill: None,
+                error: Some(format!("Skill '{}' not found", name)),
+            });
+        }
+    };
+
+    // Build an updated DbSkill with the new body
+    let now = chrono::Utc::now().to_rfc3339();
+    let db_skill = crate::skills::DbSkill {
+        id: None,
+        name: existing.metadata.name.clone(),
+        description: existing.metadata.description.clone(),
+        body: body.body.clone(),
+        version: existing.metadata.version.clone(),
+        author: existing.metadata.author.clone(),
+        homepage: existing.metadata.homepage.clone(),
+        metadata: existing.metadata.metadata.clone(),
+        enabled: existing.enabled,
+        requires_tools: existing.metadata.requires_tools.clone(),
+        requires_binaries: existing.metadata.requires_binaries.clone(),
+        arguments: existing.metadata.arguments.clone(),
+        tags: existing.metadata.tags.clone(),
+        subagent_type: existing.metadata.subagent_type.clone(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    // Force-update in database (bypass version check)
+    if let Err(e) = state.db.create_skill_force(&db_skill) {
+        log::error!("Failed to update skill '{}': {}", name, e);
+        return HttpResponse::InternalServerError().json(SkillDetailResponse {
+            success: false,
+            skill: None,
+            error: Some(format!("Failed to update skill: {}", e)),
+        });
+    }
+
+    // Re-fetch the updated skill
+    match state.skill_registry.get(&name) {
+        Some(skill) => {
+            let mut detail: SkillDetail = (&skill).into();
+            let scripts = state.skill_registry.get_skill_scripts(&name);
+            if !scripts.is_empty() {
+                detail.scripts = Some(scripts.iter().map(|s| s.into()).collect());
+            }
+            HttpResponse::Ok().json(SkillDetailResponse {
+                success: true,
+                skill: Some(detail),
+                error: None,
+            })
+        }
+        None => HttpResponse::InternalServerError().json(SkillDetailResponse {
+            success: false,
+            skill: None,
+            error: Some("Skill not found after update".to_string()),
+        }),
     }
 }
 

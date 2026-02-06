@@ -101,6 +101,29 @@ impl SkillRegistry {
         self.create_skill_from_parsed(parsed)
     }
 
+    /// Create a skill from markdown content, bypassing version checks (force update)
+    pub fn create_skill_from_markdown_force(&self, content: &str) -> Result<DbSkill, String> {
+        let (metadata, body) = parse_skill_md(content)?;
+
+        let parsed = ParsedSkill {
+            name: metadata.name,
+            description: metadata.description,
+            body,
+            version: metadata.version,
+            author: metadata.author,
+            homepage: metadata.homepage,
+            metadata: metadata.metadata,
+            requires_tools: metadata.requires_tools,
+            requires_binaries: metadata.requires_binaries,
+            arguments: metadata.arguments,
+            tags: metadata.tags,
+            subagent_type: metadata.subagent_type,
+            scripts: Vec::new(),
+        };
+
+        self.create_skill_from_parsed_force(parsed)
+    }
+
     /// Create a skill from markdown content (SKILL.md format)
     pub fn create_skill_from_markdown(&self, content: &str) -> Result<DbSkill, String> {
         let (metadata, body) = parse_skill_md(content)?;
@@ -149,6 +172,53 @@ impl SkillRegistry {
 
         // Insert skill into database
         let skill_id = self.db.create_skill(&db_skill)
+            .map_err(|e| format!("Failed to create skill: {}", e))?;
+
+        // Insert scripts
+        for script in parsed.scripts {
+            let db_script = DbSkillScript {
+                id: None,
+                skill_id,
+                name: script.name,
+                code: script.code,
+                language: script.language,
+                created_at: now.clone(),
+            };
+            self.db.create_skill_script(&db_script)
+                .map_err(|e| format!("Failed to create skill script: {}", e))?;
+        }
+
+        // Return the created skill
+        self.db.get_skill(&parsed.name)
+            .map_err(|e| format!("Failed to retrieve created skill: {}", e))?
+            .ok_or_else(|| "Skill not found after creation".to_string())
+    }
+
+    /// Create a skill from parsed skill data, bypassing version checks (force update)
+    pub fn create_skill_from_parsed_force(&self, parsed: ParsedSkill) -> Result<DbSkill, String> {
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let db_skill = DbSkill {
+            id: None,
+            name: parsed.name.clone(),
+            description: parsed.description,
+            body: parsed.body,
+            version: parsed.version,
+            author: parsed.author,
+            homepage: parsed.homepage,
+            metadata: parsed.metadata,
+            enabled: true,
+            requires_tools: parsed.requires_tools,
+            requires_binaries: parsed.requires_binaries,
+            arguments: parsed.arguments,
+            tags: parsed.tags,
+            subagent_type: parsed.subagent_type,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+
+        // Insert skill into database (force - bypass version check)
+        let skill_id = self.db.create_skill_force(&db_skill)
             .map_err(|e| format!("Failed to create skill: {}", e))?;
 
         // Insert scripts

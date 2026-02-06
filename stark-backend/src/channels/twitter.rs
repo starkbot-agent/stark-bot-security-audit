@@ -48,6 +48,7 @@ pub struct TwitterConfig {
     pub is_pro: bool,
     pub reply_chance: u8,
     pub max_mentions_per_hour: u32,
+    pub admin_user_id: Option<String>,
     pub credentials: TwitterCredentials,
 }
 
@@ -104,6 +105,13 @@ impl TwitterConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
+        let admin_user_id = db
+            .get_channel_setting(channel_id, ChannelSettingKey::TwitterAdminXAccount.as_ref())
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()));
+
         // Load OAuth credentials from API keys
         let consumer_key = get_api_key(db, ApiKeyId::TwitterConsumerKey)
             .ok_or_else(|| "TWITTER_CONSUMER_KEY not configured".to_string())?;
@@ -121,6 +129,7 @@ impl TwitterConfig {
             is_pro,
             reply_chance,
             max_mentions_per_hour,
+            admin_user_id,
             credentials: TwitterCredentials::new(
                 consumer_key,
                 consumer_secret,
@@ -283,31 +292,47 @@ pub async fn start_twitter_listener(
 
     log::info!("Starting Twitter listener for channel: {}", channel_name);
 
-    // SECURITY: Ensure safe_mode is enabled for Twitter channels
-    // Twitter input is untrusted and could contain prompt injection attacks
-    if !channel.safe_mode {
-        log::warn!(
-            "Twitter channel {} does not have safe_mode enabled - enabling now for security",
-            channel_id
-        );
-        // Enable safe_mode on the channel
-        if let Err(e) = db.set_channel_safe_mode(channel_id, true) {
-            log::error!("Failed to enable safe_mode on Twitter channel {}: {}", channel_id, e);
-            // Continue anyway - the dispatcher will check safe_mode per-message
-        }
-    }
-    log::info!("Twitter: Safe mode ENABLED - tool access restricted to Web only");
-
     // Load configuration
     let config = TwitterConfig::from_channel(&channel, &db)?;
+
+    // SECURITY: Safe mode handling for Twitter channels
+    // If an admin X account is configured, we use per-message force_safe_mode (like Discord)
+    // so admin tweets get standard mode while everyone else gets safe mode.
+    // If no admin is configured, enable channel-level safe_mode for all tweets.
+    if config.admin_user_id.is_some() {
+        log::info!(
+            "Twitter: Admin user ID configured ({}) — admin tweets use standard mode, others use safe mode",
+            config.admin_user_id.as_deref().unwrap_or("?")
+        );
+        // Disable channel-level safe_mode since we handle it per-message
+        if channel.safe_mode {
+            if let Err(e) = db.set_channel_safe_mode(channel_id, false) {
+                log::error!("Failed to disable channel-level safe_mode for per-message handling: {}", e);
+            }
+        }
+    } else {
+        // No admin configured — all tweets are untrusted, force safe mode on the channel
+        if !channel.safe_mode {
+            log::warn!(
+                "Twitter channel {} does not have safe_mode enabled - enabling now for security",
+                channel_id
+            );
+            if let Err(e) = db.set_channel_safe_mode(channel_id, true) {
+                log::error!("Failed to enable safe_mode on Twitter channel {}: {}", channel_id, e);
+            }
+        }
+        log::info!("Twitter: Safe mode ENABLED for all tweets - tool access restricted to Web only");
+    }
+
     log::info!(
-        "Twitter: Bot handle=@{}, user_id={}, poll_interval={}s, pro={}, reply_chance={}%, max_mentions/hr={}",
+        "Twitter: Bot handle=@{}, user_id={}, poll_interval={}s, pro={}, reply_chance={}%, max_mentions/hr={}, admin_id={}",
         config.bot_handle,
         config.bot_user_id,
         config.poll_interval_secs,
         config.is_pro,
         config.reply_chance,
-        if config.max_mentions_per_hour == 0 { "unlimited".to_string() } else { config.max_mentions_per_hour.to_string() }
+        if config.max_mentions_per_hour == 0 { "unlimited".to_string() } else { config.max_mentions_per_hour.to_string() },
+        config.admin_user_id.as_deref().unwrap_or("none")
     );
 
     // Validate credentials by fetching user info
@@ -469,12 +494,26 @@ pub async fn start_twitter_listener(
                                     }
                                 );
 
+                                // Determine safe mode: if admin user ID is configured,
+                                // check if author's numeric ID matches
+                                let is_admin = config.admin_user_id.as_ref()
+                                    .map(|admin_id| admin_id == &mention.author_id)
+                                    .unwrap_or(false);
+                                let force_safe_mode = !is_admin && config.admin_user_id.is_some();
+
+                                if is_admin {
+                                    log::info!("Twitter: @{} is admin — using standard mode", author_username);
+                                } else if force_safe_mode {
+                                    log::info!("Twitter: @{} is not admin — using safe mode", author_username);
+                                }
+
                                 // Process the mention
                                 let response = process_mention(
                                     &mention,
                                     &author_username,
                                     &config,
                                     channel_id,
+                                    force_safe_mode,
                                     &dispatcher,
                                     &broadcaster,
                                 ).await;
@@ -710,6 +749,7 @@ async fn process_mention(
     author_username: &str,
     config: &TwitterConfig,
     channel_id: i64,
+    force_safe_mode: bool,
     dispatcher: &Arc<MessageDispatcher>,
     broadcaster: &Arc<EventBroadcaster>,
 ) -> Option<String> {
@@ -743,7 +783,7 @@ async fn process_mention(
         message_id: Some(tweet.id.clone()),
         session_mode: None,
         selected_network: None,
-        force_safe_mode: false,
+        force_safe_mode,
     };
 
     // Subscribe to events to capture say_to_user messages.

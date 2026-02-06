@@ -29,13 +29,14 @@ impl ManageSkillsTool {
             "action".to_string(),
             PropertySchema {
                 schema_type: "string".to_string(),
-                description: "The action to perform: 'list', 'get', 'install', 'enable', 'disable', 'delete', or 'search'".to_string(),
+                description: "The action to perform: 'list', 'get', 'install', 'update', 'enable', 'disable', 'delete', or 'search'. Use 'update' to modify an existing skill (bypasses version checks).".to_string(),
                 default: None,
                 items: None,
                 enum_values: Some(vec![
                     "list".to_string(),
                     "get".to_string(),
                     "install".to_string(),
+                    "update".to_string(),
                     "enable".to_string(),
                     "disable".to_string(),
                     "delete".to_string(),
@@ -233,6 +234,32 @@ impl Tool for ManageSkillsTool {
                 }
             }
 
+            "update" => {
+                // Update an existing skill (bypasses version checks)
+                let markdown_content = if let Some(md) = params.markdown {
+                    md
+                } else {
+                    return ToolResult::error("'markdown' parameter is required for 'update' action");
+                };
+
+                match registry.create_skill_from_markdown_force(&markdown_content) {
+                    Ok(skill) => {
+                        let result = json!({
+                            "success": true,
+                            "message": format!("Skill '{}' updated successfully", skill.name),
+                            "skill": {
+                                "name": skill.name,
+                                "description": skill.description,
+                                "version": skill.version,
+                                "enabled": skill.enabled,
+                            }
+                        });
+                        ToolResult::success(serde_json::to_string_pretty(&result).unwrap_or_default())
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to update skill: {}", e)),
+                }
+            }
+
             "enable" => {
                 let name = match params.name {
                     Some(n) => n,
@@ -300,7 +327,7 @@ impl Tool for ManageSkillsTool {
                     }))
             }
 
-            _ => ToolResult::error(format!("Unknown action: '{}'. Valid actions: list, get, install, enable, disable, delete, search", params.action)),
+            _ => ToolResult::error(format!("Unknown action: '{}'. Valid actions: list, get, install, update, enable, disable, delete, search", params.action)),
         }
     }
 }

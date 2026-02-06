@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { Zap, Upload, Trash2, ExternalLink } from 'lucide-react';
+import { Zap, Upload, Trash2, ExternalLink, Code, X, Save, Edit2 } from 'lucide-react';
 import Card, { CardContent } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
-import { getSkills, uploadSkill, deleteSkill, setSkillEnabled, SkillInfo } from '@/lib/api';
+import { getSkills, uploadSkill, deleteSkill, setSkillEnabled, getSkillDetail, updateSkillBody, SkillInfo, SkillDetail } from '@/lib/api';
 
 export default function Skills() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
@@ -10,6 +10,14 @@ export default function Skills() {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Editor state
+  const [selectedSkill, setSelectedSkill] = useState<SkillDetail | null>(null);
+  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedBody, setEditedBody] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   useEffect(() => {
     loadSkills();
@@ -52,6 +60,10 @@ export default function Skills() {
     try {
       await deleteSkill(name);
       setSkills((prev) => prev.filter((s) => s.name !== name));
+      if (selectedSkill?.name === name) {
+        setSelectedSkill(null);
+        setIsEditing(false);
+      }
     } catch (err) {
       setError('Failed to delete skill');
     }
@@ -65,6 +77,62 @@ export default function Skills() {
       );
     } catch (err) {
       setError('Failed to update skill');
+    }
+  };
+
+  const handleOpenDetail = async (name: string) => {
+    setIsLoadingDetail(true);
+    setError(null);
+    setIsEditing(false);
+    setSaveMessage(null);
+
+    try {
+      const detail = await getSkillDetail(name);
+      setSelectedSkill(detail);
+      setEditedBody(detail.prompt_template);
+    } catch (err) {
+      setError('Failed to load skill details');
+    } finally {
+      setIsLoadingDetail(false);
+    }
+  };
+
+  const handleCloseDetail = () => {
+    setSelectedSkill(null);
+    setIsEditing(false);
+    setSaveMessage(null);
+  };
+
+  const handleStartEdit = () => {
+    if (selectedSkill) {
+      setEditedBody(selectedSkill.prompt_template);
+      setIsEditing(true);
+      setSaveMessage(null);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    if (selectedSkill) {
+      setEditedBody(selectedSkill.prompt_template);
+    }
+    setIsEditing(false);
+  };
+
+  const handleSave = async () => {
+    if (!selectedSkill) return;
+    setIsSaving(true);
+    setSaveMessage(null);
+
+    try {
+      await updateSkillBody(selectedSkill.name, editedBody);
+      setSelectedSkill({ ...selectedSkill, prompt_template: editedBody });
+      setIsEditing(false);
+      setSaveMessage('Saved successfully');
+      setTimeout(() => setSaveMessage(null), 3000);
+    } catch (err) {
+      setError('Failed to save skill');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -111,15 +179,139 @@ export default function Skills() {
         </div>
       )}
 
+      {/* Skill Detail/Editor Panel */}
+      {selectedSkill && (
+        <Card className="mb-6 border-stark-500/30">
+          <CardContent>
+            {/* Header */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-amber-500/20 rounded-lg">
+                  <Code className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-white">{selectedSkill.name}</h3>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    {selectedSkill.version && (
+                      <span className="text-xs px-1.5 py-0.5 bg-slate-700 text-slate-400 rounded">
+                        v{selectedSkill.version}
+                      </span>
+                    )}
+                    <span className="text-xs text-slate-500">{selectedSkill.source}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {saveMessage && (
+                  <span className="text-xs text-green-400">{saveMessage}</span>
+                )}
+                {!isEditing && (
+                  <button
+                    onClick={handleStartEdit}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-300 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                    Edit
+                  </button>
+                )}
+                {isEditing && (
+                  <>
+                    <button
+                      onClick={handleCancelEdit}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-300 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSave}
+                      disabled={isSaving}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-stark-400 hover:text-white hover:bg-stark-500/20 rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      <Save className="w-4 h-4" />
+                      {isSaving ? 'Saving...' : 'Save'}
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={handleCloseDetail}
+                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Metadata */}
+            {selectedSkill.description && (
+              <p className="text-sm text-slate-400 mb-3">{selectedSkill.description}</p>
+            )}
+            {selectedSkill.tags && selectedSkill.tags.length > 0 && (
+              <div className="flex flex-wrap gap-1 mb-3">
+                {selectedSkill.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="text-xs px-1.5 py-0.5 bg-stark-500/10 text-stark-400 rounded"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Body Editor/Viewer */}
+            <div className="border border-slate-700 rounded-lg overflow-hidden bg-slate-900/50">
+              <div className="px-3 py-1.5 bg-slate-800/50 border-b border-slate-700 text-xs text-slate-500">
+                Prompt Template
+              </div>
+              {isEditing ? (
+                <textarea
+                  value={editedBody}
+                  onChange={(e) => setEditedBody(e.target.value)}
+                  className="w-full h-80 p-4 bg-transparent text-sm text-slate-300 font-mono resize-none focus:outline-none"
+                  spellCheck={false}
+                />
+              ) : (
+                <pre className="p-4 text-sm text-slate-300 font-mono whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+                  {selectedSkill.prompt_template}
+                </pre>
+              )}
+            </div>
+
+            {/* Scripts info */}
+            {selectedSkill.scripts && selectedSkill.scripts.length > 0 && (
+              <div className="mt-3">
+                <span className="text-xs text-slate-500">Scripts: </span>
+                {selectedSkill.scripts.map((s) => (
+                  <span key={s.name} className="text-xs px-1.5 py-0.5 bg-slate-700 text-slate-400 rounded mr-1">
+                    {s.name} ({s.language})
+                  </span>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Loading detail indicator */}
+      {isLoadingDetail && (
+        <div className="mb-6 flex items-center justify-center py-8">
+          <div className="w-6 h-6 border-2 border-stark-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+
       {skills.length > 0 ? (
         <div className="grid gap-4">
           {skills.map((skill) => (
-            <Card key={skill.name}>
+            <Card key={skill.name} className={selectedSkill?.name === skill.name ? 'border-stark-500/50' : ''}>
               <CardContent>
                 {/* Mobile: stacked layout, Desktop: side by side */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
                   {/* Main content */}
-                  <div className="flex items-start sm:items-center gap-2 sm:gap-4 min-w-0">
+                  <div
+                    className="flex items-start sm:items-center gap-2 sm:gap-4 min-w-0 cursor-pointer"
+                    onClick={() => handleOpenDetail(skill.name)}
+                  >
                     {/* Icon - smaller on mobile */}
                     <div className="p-1.5 sm:p-3 bg-amber-500/20 rounded-lg shrink-0">
                       <Zap className="w-4 h-4 sm:w-6 sm:h-6 text-amber-400" />
@@ -172,6 +364,14 @@ export default function Skills() {
                   </div>
                   {/* Action buttons - bottom right on mobile */}
                   <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleOpenDetail(skill.name)}
+                      className="text-slate-400 hover:text-stark-400 hover:bg-stark-500/20 p-1.5 sm:p-2"
+                    >
+                      <Code className="w-4 h-4" />
+                    </Button>
                     <button
                       onClick={() => handleToggleEnabled(skill.name, skill.enabled)}
                       className={`px-2 py-1 text-xs rounded cursor-pointer transition-colors ${

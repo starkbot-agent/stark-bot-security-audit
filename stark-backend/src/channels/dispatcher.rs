@@ -76,6 +76,9 @@ pub struct MessageDispatcher {
     validator_registry: Option<Arc<crate::tool_validators::ValidatorRegistry>>,
     /// Transaction queue manager for queued web3 transactions
     tx_queue: Option<Arc<crate::tx_queue::TxQueueManager>>,
+    /// Mock AI client for integration tests (bypasses real AI API)
+    #[cfg(test)]
+    mock_ai_client: Option<crate::ai::MockAiClient>,
 }
 
 impl MessageDispatcher {
@@ -164,6 +167,8 @@ impl MessageDispatcher {
             hook_manager: None,
             validator_registry: None,
             tx_queue: None,
+            #[cfg(test)]
+            mock_ai_client: None,
         }
     }
 
@@ -182,6 +187,13 @@ impl MessageDispatcher {
     /// Set the transaction queue manager
     pub fn with_tx_queue(mut self, tx_queue: Arc<crate::tx_queue::TxQueueManager>) -> Self {
         self.tx_queue = Some(tx_queue);
+        self
+    }
+
+    /// Set a mock AI client for integration tests (bypasses real AI API)
+    #[cfg(test)]
+    pub fn with_mock_ai_client(mut self, client: crate::ai::MockAiClient) -> Self {
+        self.mock_ai_client = Some(client);
         self
     }
 
@@ -219,6 +231,8 @@ impl MessageDispatcher {
             hook_manager: None,     // No hooks without explicit setup
             validator_registry: None, // No validators without explicit setup
             tx_queue: None,         // No tx queue without explicit setup
+            #[cfg(test)]
+            mock_ai_client: None,
         }
     }
 
@@ -466,7 +480,23 @@ impl MessageDispatcher {
         // Sync session's max_context_tokens with agent settings for dynamic compaction
         self.context_manager.sync_max_context_tokens(session.id, settings.max_context_tokens);
 
-        // Create AI client from settings with wallet provider for x402 payments
+        // Create AI client — use mock in tests if configured, otherwise create from settings
+        #[cfg(test)]
+        let client = if let Some(ref mock) = self.mock_ai_client {
+            AiClient::Mock(mock.clone())
+        } else {
+            match AiClient::from_settings_with_wallet_provider(&settings, self.wallet_provider.clone()) {
+                Ok(c) => c.with_broadcaster(Arc::clone(&self.broadcaster), message.channel_id),
+                Err(e) => {
+                    let error = format!("Failed to create AI client: {}", e);
+                    log::error!("{}", error);
+                    self.broadcaster.broadcast(GatewayEvent::agent_error(message.channel_id, &error));
+                    self.execution_tracker.complete_execution(message.channel_id);
+                    return DispatchResult::error(error);
+                }
+            }
+        };
+        #[cfg(not(test))]
         let client = match AiClient::from_settings_with_wallet_provider(&settings, self.wallet_provider.clone()) {
             Ok(c) => c.with_broadcaster(Arc::clone(&self.broadcaster), message.channel_id),
             Err(e) => {
@@ -631,6 +661,10 @@ impl MessageDispatcher {
                 // Skip tool calls and results - they're stored for history but not sent to AI
                 DbMessageRole::ToolCall | DbMessageRole::ToolResult => continue,
             };
+            // Skip empty assistant messages - some APIs (e.g. Kimi) reject them
+            if role == MessageRole::Assistant && msg.content.trim().is_empty() {
+                continue;
+            }
             messages.push(Message {
                 role,
                 content: msg.content.clone(),
@@ -3604,6 +3638,9 @@ impl MessageDispatcher {
         Ok(login)
     }
 }
+
+#[cfg(test)]
+mod dispatcher_tests;
 
 #[cfg(test)]
 mod tests {

@@ -21,7 +21,8 @@ use crate::models::AgentSettings;
 use crate::tools::ToolDefinition;
 use crate::x402::X402PaymentInfo;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -47,11 +48,33 @@ pub struct Message {
     pub content: String,
 }
 
+/// Mock AI client for integration tests — returns pre-configured responses from a queue.
+#[derive(Clone)]
+pub struct MockAiClient {
+    responses: Arc<Mutex<VecDeque<Result<AiResponse, AiError>>>>,
+}
+
+impl MockAiClient {
+    /// Create a new MockAiClient with a queue of responses to return.
+    pub fn new(responses: Vec<Result<AiResponse, AiError>>) -> Self {
+        MockAiClient {
+            responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+        }
+    }
+
+    /// Pop the next response from the queue, or return a fallback if exhausted.
+    fn next_response(&self) -> Result<AiResponse, AiError> {
+        let mut queue = self.responses.lock().unwrap();
+        queue.pop_front().unwrap_or_else(|| Ok(AiResponse::text("(mock exhausted)".to_string())))
+    }
+}
+
 /// Unified AI client that works with any configured provider
 pub enum AiClient {
     Claude(ClaudeClient),
     OpenAI(OpenAIClient),
     Llama(LlamaClient),
+    Mock(MockAiClient),
 }
 
 impl AiClient {
@@ -157,6 +180,9 @@ impl AiClient {
             AiClient::Claude(client) => client.generate_text(messages).await,
             AiClient::OpenAI(client) => client.generate_text(messages).await,
             AiClient::Llama(client) => client.generate_text(messages).await,
+            AiClient::Mock(client) => client.next_response()
+                .map(|r| r.content)
+                .map_err(|e| e.message),
         }
     }
 
@@ -187,6 +213,9 @@ impl AiClient {
             // Other providers don't support x402
             AiClient::Claude(client) => Ok((client.generate_text(messages).await?, None)),
             AiClient::Llama(client) => Ok((client.generate_text(messages).await?, None)),
+            AiClient::Mock(client) => client.next_response()
+                .map(|r| (r.content, None))
+                .map_err(|e| e.message),
         }
     }
 
@@ -220,13 +249,14 @@ impl AiClient {
                     .await
                     .map_err(AiError::from)
             }
+            AiClient::Mock(client) => client.next_response(),
         }
     }
 
     /// Check if the current provider supports tools
     pub fn supports_tools(&self) -> bool {
         // All providers now support tools
-        matches!(self, AiClient::Claude(_) | AiClient::OpenAI(_) | AiClient::Llama(_))
+        matches!(self, AiClient::Claude(_) | AiClient::OpenAI(_) | AiClient::Llama(_) | AiClient::Mock(_))
     }
 
     /// Check if the current provider supports extended thinking
@@ -253,6 +283,7 @@ impl AiClient {
             AiClient::Llama(client) => {
                 AiClient::Llama(client.with_broadcaster(broadcaster, channel_id))
             }
+            AiClient::Mock(_) => self, // Mock doesn't need broadcaster
         }
     }
 

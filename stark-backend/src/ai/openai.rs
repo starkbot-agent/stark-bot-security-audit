@@ -664,7 +664,7 @@ impl OpenAIClient {
 
         messages.push(OpenAIMessage {
             role: "assistant".to_string(),
-            content: Some("".to_string()), // Kimi requires content field even if empty
+            content: None, // Content must be None (not empty string) for tool call messages - Kimi rejects empty assistant content
             tool_calls: Some(openai_tool_calls),
             tool_call_id: None,
         });

@@ -1,12 +1,12 @@
 ---
 name: transfer_erc20
 description: "Transfer (Send) ERC20 tokens on Base/Ethereum using the burner wallet"
-version: 1.1.0
+version: 1.2.0
 author: starkbot
 homepage: https://basescan.org
 metadata: {"requires_auth": false, "clawdbot":{"emoji":"🪙"}}
 tags: [crypto, transfer, send, erc20, tokens, base, wallet]
-requires_tools: [register_set, token_lookup, to_raw_amount, web3_function_call, list_queued_web3_tx, broadcast_web3_tx, select_web3_network]
+requires_tools: [register_set, token_lookup, to_raw_amount, web3_preset_function_call, list_queued_web3_tx, broadcast_web3_tx, select_web3_network]
 ---
 
 # ERC20 Token Transfer/Send Skill
@@ -17,9 +17,10 @@ Transfer or Send ERC20 tokens from the burner wallet to any address.
 >
 > - Use `token_lookup` to get token address and decimals
 > - Use `to_raw_amount` to convert human amounts to raw units
-> - The `transfer_amount` register is validated by `web3_function_call`
+> - Use `register_set` to set the recipient address
+> - The `erc20_transfer` preset reads all values from registers — no manual params needed
 
-## 🚨 Step 0: Network Selection (If Specified)
+## Step 0: Network Selection (If Specified)
 
 **Before ANY transfer operation, check if the user specified a network in their query.**
 
@@ -30,9 +31,9 @@ If the user mentions a specific network (e.g., "on polygon", "on mainnet", "on b
 ```
 
 **Examples of network detection:**
-- "send 1 USDC **on polygon**" → `{"tool": "select_web3_network", "network": "polygon"}`
-- "transfer 0.5 ETH **on mainnet**" → `{"tool": "select_web3_network", "network": "mainnet"}`
-- "send tokens **on arbitrum**" → `{"tool": "select_web3_network", "network": "arbitrum"}`
+- "send 1 USDC **on polygon**" -> `{"tool": "select_web3_network", "network": "polygon"}`
+- "transfer 0.5 ETH **on mainnet**" -> `{"tool": "select_web3_network", "network": "mainnet"}`
+- "send tokens **on arbitrum**" -> `{"tool": "select_web3_network", "network": "arbitrum"}`
 
 **If no network is specified**, proceed with the current/default network (usually base).
 
@@ -44,8 +45,8 @@ If the user mentions a specific network (e.g., "on polygon", "on mainnet", "on b
 |------|---------|
 | `token_lookup` | Get token address and decimals |
 | `to_raw_amount` | Convert human amount to raw units safely |
-| `web3_function_call` | Execute ERC20 transfers and check balances |
-| `register_set` | Set token address for balance checks |
+| `web3_preset_function_call` | Execute ERC20 transfers and check balances via presets |
+| `register_set` | Set recipient address and other registers |
 
 **Note:** `wallet_address` is an intrinsic register - always available automatically.
 
@@ -55,10 +56,11 @@ If the user mentions a specific network (e.g., "on polygon", "on mainnet", "on b
 
 **ALWAYS follow this sequence for ERC20 transfers:**
 
-0. `select_web3_network` → **If user specified a network** (e.g., "on polygon")
-1. `token_lookup` → Get token address and decimals
-2. `to_raw_amount` → Convert human amount to raw units
-3. `web3_function_call` → Execute the transfer
+0. `select_web3_network` -> **If user specified a network** (e.g., "on polygon")
+1. `token_lookup` -> Get token address and decimals
+2. `to_raw_amount` -> Convert human amount to raw units (sets `transfer_amount` register)
+3. `register_set` -> Set `recipient_address` register
+4. `web3_preset_function_call` -> Execute the transfer via `erc20_transfer` preset
 
 ---
 
@@ -71,8 +73,8 @@ cache_as: token_address
 ```
 
 This sets registers:
-- `token_address` → contract address
-- `token_address_decimals` → decimals (e.g., 18)
+- `token_address` -> contract address
+- `token_address_decimals` -> decimals (e.g., 18)
 
 ---
 
@@ -84,19 +86,26 @@ cache_as: "transfer_amount"
 ```
 
 This reads `token_address_decimals` automatically and sets:
-- `transfer_amount` → "1000000000000000000" (for 18 decimals)
+- `transfer_amount` -> "1000000000000000000" (for 18 decimals)
 
 ---
 
-## Step 3: Execute the transfer
+## Step 3: Set recipient address
 
-```tool:web3_function_call
-abi: erc20
-contract: "<TOKEN_ADDRESS from step 1>"
-function: transfer
-params: ["<RECIPIENT_ADDRESS>", "<RAW_AMOUNT from step 2>"]
+```json
+{"tool": "register_set", "key": "recipient_address", "value": "<RECIPIENT_ADDRESS>"}
+```
+
+---
+
+## Step 4: Execute the transfer
+
+```tool:web3_preset_function_call
+preset: erc20_transfer
 network: base
 ```
+
+The `erc20_transfer` preset reads `token_address`, `recipient_address`, and `transfer_amount` from registers automatically.
 
 ---
 
@@ -113,15 +122,16 @@ amount: "10"
 cache_as: "transfer_amount"
 ```
 
-```tool:web3_function_call
-abi: erc20
-contract: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-function: transfer
-params: ["0x1234567890abcdef1234567890abcdef12345678", "10000000"]
+```json
+{"tool": "register_set", "key": "recipient_address", "value": "0x1234567890abcdef1234567890abcdef12345678"}
+```
+
+```tool:web3_preset_function_call
+preset: erc20_transfer
 network: base
 ```
 
-> **Note:** The `transfer_amount` register is validated by `web3_function_call` to prevent hallucinated amounts.
+> **Note:** The `transfer_amount` register is validated by the tool to prevent hallucinated amounts.
 
 ---
 
@@ -148,7 +158,7 @@ key: token_address
 value: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 ```
 
-```tool:web3_function_call
+```tool:web3_preset_function_call
 preset: erc20_balance
 network: base
 call_only: true
@@ -190,7 +200,7 @@ Use `token_lookup` to get addresses automatically, or use these directly:
 Before executing a transfer:
 
 1. **Verify recipient address** - Double-check the address is correct
-2. **Check balance** - Use `web3_function_call` (erc20_balance preset) for tokens
+2. **Check balance** - Use `web3_preset_function_call` (erc20_balance preset) for tokens
 3. **Confirm amount** - Ensure decimals are correct for the token (use `to_raw_amount`!)
 4. **Network** - Confirm you're on the right network (base vs mainnet)
 5. **ETH for gas** - You need ETH to pay for gas, even when sending ERC20s
@@ -205,7 +215,7 @@ Before executing a transfer:
 | "Transfer amount exceeds balance" | Not enough tokens | Check token balance |
 | "Gas estimation failed" | Invalid recipient or params | Verify addresses |
 | "Transaction reverted" | Contract rejection | Check amounts |
-| "Register not found" | Missing register | Use token_lookup/to_raw_amount first |
+| "Register not found" | Missing register | Use token_lookup/to_raw_amount/register_set first |
 
 ---
 

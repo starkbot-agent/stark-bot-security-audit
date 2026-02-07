@@ -21,7 +21,7 @@ fn format_tool_call_for_discord(
 ) -> Option<String> {
     match verbosity {
         ToolOutputVerbosity::None => None,
-        ToolOutputVerbosity::Minimal => Some(format!("🔧 **Calling:** `{}`", tool_name)),
+        ToolOutputVerbosity::Minimal | ToolOutputVerbosity::MinimalThrottled => Some(format!("🔧 **Calling:** `{}`", tool_name)),
         ToolOutputVerbosity::Full => {
             let params_str = serde_json::to_string_pretty(parameters)
                 .unwrap_or_else(|_| parameters.to_string());
@@ -47,7 +47,7 @@ fn format_tool_result_for_discord(
     let status = if success { "✅" } else { "❌" };
     match verbosity {
         ToolOutputVerbosity::None => None,
-        ToolOutputVerbosity::Minimal => {
+        ToolOutputVerbosity::Minimal | ToolOutputVerbosity::MinimalThrottled => {
             // say_to_user should always show content since that's its whole purpose
             if tool_name == "say_to_user" {
                 Some(format!("{} {}", status, content))

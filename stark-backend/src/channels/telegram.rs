@@ -22,7 +22,7 @@ fn format_tool_call_for_telegram(
 ) -> Option<String> {
     match verbosity {
         ToolOutputVerbosity::None => None,
-        ToolOutputVerbosity::Minimal => Some(format!("🔧 Calling: {}", tool_name)),
+        ToolOutputVerbosity::Minimal | ToolOutputVerbosity::MinimalThrottled => Some(format!("🔧 Calling: {}", tool_name)),
         ToolOutputVerbosity::Full => {
             let params_str = serde_json::to_string_pretty(parameters)
                 .unwrap_or_else(|_| parameters.to_string());
@@ -47,7 +47,7 @@ fn format_tool_result_for_telegram(
     let status = if success { "✅" } else { "❌" };
     match verbosity {
         ToolOutputVerbosity::None => None,
-        ToolOutputVerbosity::Minimal => {
+        ToolOutputVerbosity::Minimal | ToolOutputVerbosity::MinimalThrottled => {
             if tool_name == "say_to_user" {
                 Some(format!("{} {}", status, content))
             } else {
@@ -421,6 +421,8 @@ pub async fn start_telegram_listener(
                     // Uses a single "status message" that gets edited (like Discord minimal mode)
                     let event_task = tokio::spawn(async move {
                         let mut status_message_id: Option<MessageId> = None;
+                        let verbosity = ToolOutputVerbosity::MinimalThrottled;
+                        let mut throttler = util::StatusThrottler::default_for_gateway();
 
                         while let Some(event) = event_rx.recv().await {
                             if !util::event_matches_session(
@@ -446,7 +448,7 @@ pub async fn start_telegram_listener(
                                     format_tool_call_for_telegram(
                                         tool_name,
                                         &params,
-                                        ToolOutputVerbosity::Minimal,
+                                        verbosity.display_verbosity(),
                                     )
                                 }
                                 "tool.result" => {
@@ -472,18 +474,39 @@ pub async fn start_telegram_listener(
                                         .unwrap_or("");
 
                                     // say_to_user: send as NEW message directly (not status edit)
+                                    // This is the critical user-facing message — retry on rate limit
                                     if tool_name == "say_to_user" {
                                         if success && !content.is_empty() {
                                             let chunks = util::split_message(content, 4096);
                                             for chunk in &chunks {
-                                                if let Err(e) = bot_for_events
-                                                    .send_message(telegram_chat_id, chunk)
-                                                    .await
-                                                {
-                                                    log::error!(
-                                                        "Telegram: Failed to send say_to_user message: {}",
-                                                        e
-                                                    );
+                                                // Try up to 3 times with rate-limit backoff
+                                                let mut attempts = 0;
+                                                loop {
+                                                    attempts += 1;
+                                                    match bot_for_events
+                                                        .send_message(telegram_chat_id, chunk)
+                                                        .await
+                                                    {
+                                                        Ok(_) => break,
+                                                        Err(e) => {
+                                                            let err_str = e.to_string();
+                                                            if let Some(secs) = util::parse_retry_after(&err_str) {
+                                                                if attempts < 3 {
+                                                                    log::warn!(
+                                                                        "Telegram: say_to_user rate-limited, retrying after {}s (attempt {})",
+                                                                        secs, attempts
+                                                                    );
+                                                                    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                                                                    continue;
+                                                                }
+                                                            }
+                                                            log::error!(
+                                                                "Telegram: Failed to send say_to_user message (attempt {}): {}",
+                                                                attempts, e
+                                                            );
+                                                            break;
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -495,7 +518,7 @@ pub async fn start_telegram_listener(
                                             success,
                                             duration_ms,
                                             content,
-                                            ToolOutputVerbosity::Minimal,
+                                            verbosity.display_verbosity(),
                                         )
                                     }
                                 }
@@ -507,6 +530,12 @@ pub async fn start_telegram_listener(
                             };
 
                             if let Some(text) = message_text {
+                                // Throttle: skip status updates if too frequent or rate-limited
+                                let is_first = status_message_id.is_none();
+                                if verbosity.is_throttled() && !throttler.should_send(is_first) {
+                                    continue;
+                                }
+
                                 let display_text = if text.len() > 4096 {
                                     format!("{}...", &text[..4093])
                                 } else {
@@ -516,7 +545,7 @@ pub async fn start_telegram_listener(
                                 match status_message_id {
                                     Some(msg_id) => {
                                         // Edit existing status message
-                                        if let Err(e) = bot_for_events
+                                        match bot_for_events
                                             .edit_message_text(
                                                 telegram_chat_id,
                                                 msg_id,
@@ -524,26 +553,36 @@ pub async fn start_telegram_listener(
                                             )
                                             .await
                                         {
-                                            log::warn!(
-                                                "Telegram: Failed to edit status message, recreating: {}",
-                                                e
-                                            );
-                                            let _ = bot_for_events
-                                                .delete_message(telegram_chat_id, msg_id)
-                                                .await;
-                                            match bot_for_events
-                                                .send_message(telegram_chat_id, &display_text)
-                                                .await
-                                            {
-                                                Ok(new_msg) => {
-                                                    status_message_id = Some(new_msg.id);
-                                                }
-                                                Err(e) => {
-                                                    log::error!(
-                                                        "Telegram: Failed to send new status message: {}",
+                                            Ok(_) => {
+                                                throttler.record_success();
+                                            }
+                                            Err(e) => {
+                                                if !throttler.record_error(&e.to_string()) {
+                                                    // Not a rate limit — try recreating
+                                                    log::warn!(
+                                                        "Telegram: Failed to edit status message, recreating: {}",
                                                         e
                                                     );
-                                                    status_message_id = None;
+                                                    let _ = bot_for_events
+                                                        .delete_message(telegram_chat_id, msg_id)
+                                                        .await;
+                                                    match bot_for_events
+                                                        .send_message(telegram_chat_id, &display_text)
+                                                        .await
+                                                    {
+                                                        Ok(new_msg) => {
+                                                            status_message_id = Some(new_msg.id);
+                                                            throttler.record_success();
+                                                        }
+                                                        Err(e2) => {
+                                                            log::error!(
+                                                                "Telegram: Failed to send new status message: {}",
+                                                                e2
+                                                            );
+                                                            throttler.record_error(&e2.to_string());
+                                                            status_message_id = None;
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -556,16 +595,19 @@ pub async fn start_telegram_listener(
                                         {
                                             Ok(sent_msg) => {
                                                 status_message_id = Some(sent_msg.id);
+                                                throttler.record_success();
                                                 log::debug!(
                                                     "Telegram: Created status message {:?}",
                                                     sent_msg.id
                                                 );
                                             }
                                             Err(e) => {
-                                                log::error!(
-                                                    "Telegram: Failed to send initial status message: {}",
-                                                    e
-                                                );
+                                                if !throttler.record_error(&e.to_string()) {
+                                                    log::error!(
+                                                        "Telegram: Failed to send initial status message: {}",
+                                                        e
+                                                    );
+                                                }
                                             }
                                         }
                                     }

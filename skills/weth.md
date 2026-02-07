@@ -1,11 +1,11 @@
 ---
 name: weth
 description: "Wrap ETH to WETH or unwrap WETH to ETH on Base or Mainnet"
-version: 2.4.0
+version: 2.5.0
 author: starkbot
 metadata: {"clawdbot":{"emoji":"🔄"}}
 tags: [crypto, defi, finance, weth, wrap, unwrap, base]
-requires_tools: [register_set, web3_function_call, list_queued_web3_tx, broadcast_web3_tx]
+requires_tools: [register_set, web3_preset_function_call, list_queued_web3_tx, broadcast_web3_tx]
 ---
 
 # WETH Wrap/Unwrap
@@ -25,7 +25,7 @@ value: "1000000000000000"
 ```
 
 ### 2. Execute wrap
-```tool:web3_function_call
+```tool:web3_preset_function_call
 preset: weth_deposit
 network: base
 ```
@@ -41,7 +41,7 @@ value: "1000000000000000"
 ```
 
 ### 2. Execute unwrap
-```tool:web3_function_call
+```tool:web3_preset_function_call
 preset: weth_withdraw
 network: base
 ```
@@ -50,7 +50,7 @@ network: base
 
 ## Check WETH Balance
 
-```tool:web3_function_call
+```tool:web3_preset_function_call
 preset: weth_balance
 network: base
 call_only: true
@@ -93,7 +93,7 @@ The `wallet_address` register is intrinsic - no need to set it first.
 
 ## Transaction Queue Note
 
-When using `web3_function_call` with presets like `weth_deposit` or `weth_withdraw`, transactions are QUEUED (not broadcast immediately). Use `list_queued_web3_tx` to view queued transactions and `broadcast_web3_tx` to broadcast them.
+When using `web3_preset_function_call` with presets like `weth_deposit` or `weth_withdraw`, transactions are QUEUED (not broadcast immediately). Use `list_queued_web3_tx` to view queued transactions and `broadcast_web3_tx` to broadcast them.
 
 ### Verify and Broadcast
 ```tool:list_queued_web3_tx

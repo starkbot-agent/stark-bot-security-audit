@@ -6,6 +6,7 @@ mod discord_lookup;
 mod discord_read;
 mod discord_write;
 mod github_user;
+mod telegram_read;
 mod twitter_post;
 pub mod twitter_oauth;
 
@@ -17,4 +18,5 @@ pub use twitter_oauth::{
     check_subscription_tier, generate_oauth_header, percent_encode, TwitterCredentials,
     XSubscriptionTier, TWITTER_MAX_CHARS, TWITTER_PREMIUM_MAX_CHARS,
 };
+pub use telegram_read::TelegramReadTool;
 pub use twitter_post::TwitterPostTool;

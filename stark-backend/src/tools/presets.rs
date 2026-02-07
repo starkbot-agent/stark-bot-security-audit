@@ -307,6 +307,17 @@ fn default_web3_presets() -> HashMap<String, Web3Preset> {
         description: "Unwrap WETH to ETH".to_string(),
     });
 
+    map.insert("erc20_transfer".to_string(), Web3Preset {
+        abi: "erc20".to_string(),
+        contracts: HashMap::new(),
+        contract_register: Some("token_address".to_string()),
+        function: "transfer".to_string(),
+        params_registers: vec!["recipient_address".to_string(), "transfer_amount".to_string()],
+        value_register: None,
+        static_params: vec![],
+        description: "Transfer ERC20 tokens. Set token_address, recipient_address, transfer_amount registers first.".to_string(),
+    });
+
     map
 }
 

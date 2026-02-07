@@ -18,6 +18,9 @@ pub enum ToolOutputVerbosity {
     Full,
     /// Show only tool name, no parameters or content details
     Minimal,
+    /// Like Minimal, but throttle status message edits (max one every few seconds)
+    /// and handle rate-limit backoff. Recommended for external APIs (Telegram, Discord).
+    MinimalThrottled,
     /// Don't show tool calls/results at all
     None,
 }
@@ -26,6 +29,19 @@ impl ToolOutputVerbosity {
     /// Parse from string, defaulting to Full if invalid
     pub fn from_str_or_default(s: &str) -> Self {
         s.parse().unwrap_or_default()
+    }
+
+    /// Whether this verbosity mode uses throttled status updates
+    pub fn is_throttled(&self) -> bool {
+        matches!(self, Self::MinimalThrottled)
+    }
+
+    /// The effective display verbosity (MinimalThrottled renders the same as Minimal)
+    pub fn display_verbosity(&self) -> Self {
+        match self {
+            Self::MinimalThrottled => Self::Minimal,
+            other => *other,
+        }
     }
 }
 
@@ -402,7 +418,12 @@ mod tests {
     fn test_tool_verbosity_parsing() {
         assert_eq!(ToolOutputVerbosity::from_str_or_default("full"), ToolOutputVerbosity::Full);
         assert_eq!(ToolOutputVerbosity::from_str_or_default("minimal"), ToolOutputVerbosity::Minimal);
+        assert_eq!(ToolOutputVerbosity::from_str_or_default("minimal_throttled"), ToolOutputVerbosity::MinimalThrottled);
         assert_eq!(ToolOutputVerbosity::from_str_or_default("none"), ToolOutputVerbosity::None);
         assert_eq!(ToolOutputVerbosity::from_str_or_default("invalid"), ToolOutputVerbosity::Full);
+        // MinimalThrottled renders the same as Minimal
+        assert_eq!(ToolOutputVerbosity::MinimalThrottled.display_verbosity(), ToolOutputVerbosity::Minimal);
+        assert!(ToolOutputVerbosity::MinimalThrottled.is_throttled());
+        assert!(!ToolOutputVerbosity::Minimal.is_throttled());
     }
 }

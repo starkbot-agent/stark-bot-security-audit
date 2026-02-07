@@ -128,6 +128,14 @@ impl RegisterSetTool {
 
     /// Check if a register key is blocked from being set via register_set
     fn check_blocked(key: &str) -> Result<(), String> {
+        // Block ALL swap_* registers - these must be set by decode_calldata or x402_fetch
+        if key.starts_with("swap_") {
+            return Err(format!(
+                "Cannot set '{}' via register_set. All swap registers are set automatically: use 'x402_fetch' with preset: 'swap_quote' and cache_as: 'swap_quote', then 'decode_calldata' with abi: '0x_settler' and calldata_register: 'swap_quote' to set swap parameters.",
+                key
+            ));
+        }
+
         for (blocked_key, hint) in Self::BLOCKED_REGISTERS {
             if key == *blocked_key {
                 return Err(format!(
@@ -235,6 +243,19 @@ impl Tool for RegisterSetTool {
             }
         };
 
+        // Block large values - registers are for small values (addresses, amounts, short strings)
+        // Large hex blobs and calldata should be set by tools like x402_fetch and decode_calldata
+        let value_len = match &store_value {
+            Value::String(s) => s.len(),
+            _ => serde_json::to_string(&store_value).map(|s| s.len()).unwrap_or(0),
+        };
+        if value_len > 256 {
+            return ToolResult::error(format!(
+                "Value too large for register_set ({} chars, max 256). Registers are for small values like addresses and amounts. For swap calldata, use 'x402_fetch' with cache_as to store the quote, then 'decode_calldata' to set parameters automatically.",
+                value_len
+            ));
+        }
+
         // Validate address registers contain valid Ethereum addresses
         if let Err(e) = Self::validate_address_register(&params.key, &store_value) {
             return ToolResult::error(e);
@@ -315,9 +336,14 @@ mod tests {
         assert!(RegisterSetTool::check_blocked("transfer_data").is_err());
         assert!(RegisterSetTool::check_blocked("transfer_tx").is_err());
 
+        // All swap_* registers are blocked (wildcard)
+        assert!(RegisterSetTool::check_blocked("swap_data").is_err());
+        assert!(RegisterSetTool::check_blocked("swap_quote").is_err());
+        assert!(RegisterSetTool::check_blocked("swap_calldata").is_err());
+        assert!(RegisterSetTool::check_blocked("swap_anything").is_err());
+
         // Other registers are allowed
         assert!(RegisterSetTool::check_blocked("sell_amount").is_ok());
-        assert!(RegisterSetTool::check_blocked("swap_quote").is_ok());
         assert!(RegisterSetTool::check_blocked("gas_price").is_ok());
         assert!(RegisterSetTool::check_blocked("send_to").is_ok());
     }

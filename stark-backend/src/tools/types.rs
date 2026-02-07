@@ -674,7 +674,38 @@ impl Default for ToolConfig {
     }
 }
 
+/// The definitive list of tools allowed in safe mode.
+/// This is the ONLY place safe mode tool permissions are defined.
+/// Safe mode is used for untrusted input (non-admin Telegram users, Twitter mentions, etc.)
+/// SECURITY: Adding tools here grants them to ALL untrusted users. Be extremely careful.
+pub const SAFE_MODE_ALLOW_LIST: &[&str] = &[
+    "set_agent_subtype",    // Changes agent mode per-session (safe, no persistence)
+    "token_lookup",         // Read-only token info lookup (safe)
+    "say_to_user",          // Send message to user (safe)
+    "task_fully_completed", // Mark task done (safe)
+    "memory_read",          // Read-only memory retrieval (sandboxed to safemode/ in safe mode)
+    "memory_search",        // Read-only memory search (sandboxed to safemode/ in safe mode)
+    "discord_read",         // Read-only Discord operations (safe)
+    "discord_lookup",       // Read-only Discord server/channel lookup (safe)
+    "telegram_read",        // Read-only Telegram operations (safe)
+];
+
 impl ToolConfig {
+    /// Create a safe mode tool config.
+    /// This is the ONLY way to create a safe mode config - enforced at the type level.
+    /// Only Web group tools + the explicit SAFE_MODE_ALLOW_LIST tools are permitted.
+    pub fn safe_mode() -> Self {
+        ToolConfig {
+            id: None,
+            channel_id: None,
+            profile: ToolProfile::SafeMode,
+            allow_list: SAFE_MODE_ALLOW_LIST.iter().map(|s| s.to_string()).collect(),
+            deny_list: vec![],
+            allowed_groups: vec!["web".to_string()],
+            denied_groups: vec![],
+        }
+    }
+
     /// Check if a tool is allowed by this configuration
     pub fn is_tool_allowed(&self, tool_name: &str, tool_group: ToolGroup) -> bool {
         // Explicit deny takes precedence

@@ -27,7 +27,7 @@ impl X402FetchTool {
             "preset".to_string(),
             PropertySchema {
                 schema_type: "string".to_string(),
-                description: "Preset name. Available: 'swap_quote'. Presets read from registers and build URLs automatically.".to_string(),
+                description: "Preset name. Available: 'swap_quote'. Presets read from registers (sell_token, buy_token, sell_amount, wallet_address) and build URLs automatically. You do NOT need to pass any URL or parameters.".to_string(),
                 default: None,
                 items: None,
                 enum_values: Some(vec!["swap_quote".to_string()]),
@@ -49,7 +49,7 @@ impl X402FetchTool {
             "cache_as".to_string(),
             PropertySchema {
                 schema_type: "string".to_string(),
-                description: "Register name to cache the result (e.g., 'swap_quote'). Required for passing data to web3_tx.".to_string(),
+                description: "Register name to store the result internally (e.g., 'swap_quote'). The data is stored in a register for use by decode_calldata — do NOT copy or extract data from the response yourself.".to_string(),
                 default: None,
                 items: None,
                 enum_values: None,
@@ -59,7 +59,7 @@ impl X402FetchTool {
         X402FetchTool {
             definition: ToolDefinition {
                 name: "x402_fetch".to_string(),
-                description: "Make HTTP requests to x402-enabled endpoints using presets. Presets read from registers to build URLs. Available: swap_quote.".to_string(),
+                description: "Fetch swap quotes from x402-enabled endpoints. Uses presets that automatically read from registers (sell_token, buy_token, sell_amount, wallet_address) to build the request. The response is stored internally in a register via cache_as — do NOT extract or copy hex/calldata from the response. After calling this, use decode_calldata to process the cached result.".to_string(),
                 input_schema: ToolInputSchema {
                     schema_type: "object".to_string(),
                     properties,

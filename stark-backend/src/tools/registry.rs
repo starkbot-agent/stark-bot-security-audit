@@ -120,15 +120,23 @@ impl ToolRegistry {
             tools.iter().map(|t| t.definition().name.clone()).collect();
 
         // Force-include required tools even if they're not normally allowed
+        // BUT respect safe mode restrictions - never force-include tools blocked by safe mode
         for tool_name in required_tools {
             if !tool_names.contains(tool_name) {
                 if let Some(tool) = self.get(tool_name) {
-                    log::info!(
-                        "[REGISTRY] Force-including required tool '{}' for active skill",
-                        tool_name
-                    );
-                    tools.push(tool);
-                    tool_names.insert(tool_name.clone());
+                    if config.is_tool_allowed(&tool.definition().name, tool.group()) {
+                        log::info!(
+                            "[REGISTRY] Force-including required tool '{}' for active skill",
+                            tool_name
+                        );
+                        tools.push(tool);
+                        tool_names.insert(tool_name.clone());
+                    } else {
+                        log::warn!(
+                            "[REGISTRY] Skipping required tool '{}' - blocked by tool config (safe mode?)",
+                            tool_name
+                        );
+                    }
                 } else {
                     log::warn!(
                         "[REGISTRY] Required tool '{}' not found in registry",
@@ -282,5 +290,301 @@ mod tests {
         assert!(!config.is_tool_allowed("dangerous_tool", ToolGroup::System));
         // Other tools should be allowed
         assert!(config.is_tool_allowed("safe_tool", ToolGroup::System));
+    }
+
+    // =========================================================================
+    // SAFE MODE ENFORCEMENT TESTS
+    //
+    // These tests prove that in safe mode, ONLY the explicitly allowed tools
+    // can be used. No bypass is possible — not through skills, not through
+    // group tricks, not through allow_list manipulation, not through anything.
+    // =========================================================================
+
+    /// Build a registry with one tool per group so we can test every group.
+    fn build_all_groups_registry() -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        // One representative tool per group
+        registry.register(Arc::new(MockTool::new("system_tool", ToolGroup::System)));
+        registry.register(Arc::new(MockTool::new("web_fetch", ToolGroup::Web)));
+        registry.register(Arc::new(MockTool::new("read_file", ToolGroup::Filesystem)));
+        registry.register(Arc::new(MockTool::new("web3_tx", ToolGroup::Finance)));
+        registry.register(Arc::new(MockTool::new("edit_file", ToolGroup::Development)));
+        registry.register(Arc::new(MockTool::new("exec", ToolGroup::Exec)));
+        registry.register(Arc::new(MockTool::new("twitter_post", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("agent_send", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("discord_write", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("moltx", ToolGroup::Social)));
+        registry.register(Arc::new(MockTool::new("memory_write", ToolGroup::Memory)));
+        // Also register the safe-mode allowed tools (from non-Web groups)
+        registry.register(Arc::new(MockTool::new("say_to_user", ToolGroup::System)));
+        registry.register(Arc::new(MockTool::new("set_agent_subtype", ToolGroup::System)));
+        registry.register(Arc::new(MockTool::new("task_fully_completed", ToolGroup::System)));
+        registry.register(Arc::new(MockTool::new("token_lookup", ToolGroup::Finance)));
+        registry.register(Arc::new(MockTool::new("memory_read", ToolGroup::Memory)));
+        registry.register(Arc::new(MockTool::new("memory_search", ToolGroup::Memory)));
+        registry.register(Arc::new(MockTool::new("discord_read", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("discord_lookup", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("telegram_read", ToolGroup::Messaging)));
+        registry
+    }
+
+    #[test]
+    fn test_safe_mode_blocks_twitter_post() {
+        let config = ToolConfig::safe_mode();
+        assert!(
+            !config.is_tool_allowed("twitter_post", ToolGroup::Messaging),
+            "twitter_post MUST be blocked in safe mode"
+        );
+    }
+
+    #[test]
+    fn test_safe_mode_blocks_every_dangerous_group() {
+        let config = ToolConfig::safe_mode();
+
+        // These must ALL be blocked
+        assert!(!config.is_tool_allowed("exec", ToolGroup::Exec), "Exec tools must be blocked");
+        assert!(!config.is_tool_allowed("edit_file", ToolGroup::Development), "Development tools must be blocked");
+        assert!(!config.is_tool_allowed("read_file", ToolGroup::Filesystem), "Filesystem tools must be blocked");
+        assert!(!config.is_tool_allowed("web3_tx", ToolGroup::Finance), "Finance tools must be blocked");
+        assert!(!config.is_tool_allowed("agent_send", ToolGroup::Messaging), "Messaging tools must be blocked");
+        assert!(!config.is_tool_allowed("discord_write", ToolGroup::Messaging), "discord_write must be blocked");
+        assert!(!config.is_tool_allowed("moltx", ToolGroup::Social), "Social tools must be blocked");
+        assert!(!config.is_tool_allowed("memory_write", ToolGroup::Memory), "Memory write tools must be blocked");
+        assert!(!config.is_tool_allowed("system_tool", ToolGroup::System), "Arbitrary System tools must be blocked");
+    }
+
+    #[test]
+    fn test_safe_mode_allows_only_allowlisted_tools() {
+        let config = ToolConfig::safe_mode();
+
+        // These are the ONLY non-Web tools that should be allowed
+        for tool_name in crate::tools::types::SAFE_MODE_ALLOW_LIST {
+            assert!(
+                config.is_tool_allowed(tool_name, ToolGroup::System) // group doesn't matter for allow_list
+                    || config.is_tool_allowed(tool_name, ToolGroup::Finance)
+                    || config.is_tool_allowed(tool_name, ToolGroup::Messaging)
+                    || config.is_tool_allowed(tool_name, ToolGroup::Memory),
+                "Allow-listed tool '{}' should be allowed in safe mode",
+                tool_name
+            );
+        }
+
+        // Web group tools should also be allowed
+        assert!(config.is_tool_allowed("web_fetch", ToolGroup::Web), "Web tools should be allowed");
+    }
+
+    #[test]
+    fn test_safe_mode_get_allowed_tools_excludes_dangerous() {
+        let registry = build_all_groups_registry();
+        let config = ToolConfig::safe_mode();
+        let allowed = registry.get_allowed_tools(&config);
+        let allowed_names: Vec<String> = allowed.iter().map(|t| t.definition().name.clone()).collect();
+
+        // twitter_post must NOT be in the list
+        assert!(
+            !allowed_names.contains(&"twitter_post".to_string()),
+            "twitter_post must not appear in safe mode tool list, got: {:?}",
+            allowed_names
+        );
+        // agent_send must NOT be in the list
+        assert!(
+            !allowed_names.contains(&"agent_send".to_string()),
+            "agent_send must not appear in safe mode tool list"
+        );
+        // discord_write must NOT be in the list
+        assert!(
+            !allowed_names.contains(&"discord_write".to_string()),
+            "discord_write must not appear in safe mode tool list"
+        );
+        // exec must NOT be in the list
+        assert!(
+            !allowed_names.contains(&"exec".to_string()),
+            "exec must not appear in safe mode tool list"
+        );
+        // web3_tx must NOT be in the list
+        assert!(
+            !allowed_names.contains(&"web3_tx".to_string()),
+            "web3_tx must not appear in safe mode tool list"
+        );
+        // edit_file must NOT be in the list
+        assert!(
+            !allowed_names.contains(&"edit_file".to_string()),
+            "edit_file must not appear in safe mode tool list"
+        );
+
+        // But safe tools SHOULD be in the list
+        assert!(allowed_names.contains(&"web_fetch".to_string()), "web_fetch should be allowed");
+        assert!(allowed_names.contains(&"say_to_user".to_string()), "say_to_user should be allowed");
+        assert!(allowed_names.contains(&"discord_read".to_string()), "discord_read should be allowed");
+        assert!(allowed_names.contains(&"telegram_read".to_string()), "telegram_read should be allowed");
+    }
+
+    #[test]
+    fn test_safe_mode_skill_force_include_cannot_bypass() {
+        // Even when a skill requires twitter_post, it must NOT be included in safe mode
+        let registry = build_all_groups_registry();
+        let config = ToolConfig::safe_mode();
+
+        let tools = registry.get_tool_definitions_for_subtype_with_required(
+            &config,
+            AgentSubtype::Secretary, // Secretary normally has Messaging access
+            &["twitter_post".to_string(), "agent_send".to_string(), "exec".to_string()],
+        );
+        let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+
+        assert!(
+            !tool_names.contains(&"twitter_post".to_string()),
+            "Skill requires_tools must NOT bypass safe mode for twitter_post, got: {:?}",
+            tool_names
+        );
+        assert!(
+            !tool_names.contains(&"agent_send".to_string()),
+            "Skill requires_tools must NOT bypass safe mode for agent_send, got: {:?}",
+            tool_names
+        );
+        assert!(
+            !tool_names.contains(&"exec".to_string()),
+            "Skill requires_tools must NOT bypass safe mode for exec, got: {:?}",
+            tool_names
+        );
+    }
+
+    #[tokio::test]
+    async fn test_safe_mode_execute_blocks_twitter_post() {
+        // Even if the AI somehow calls twitter_post, execution must be blocked
+        let registry = build_all_groups_registry();
+        let config = ToolConfig::safe_mode();
+        let context = ToolContext::default();
+
+        let result = registry.execute(
+            "twitter_post",
+            serde_json::json!({"text": "hacked tweet"}),
+            &context,
+            Some(&config),
+        ).await;
+
+        assert!(!result.success, "twitter_post execution must fail in safe mode");
+        assert!(
+            result.error.as_ref().unwrap().contains("not allowed"),
+            "Error should say tool is not allowed, got: {:?}",
+            result.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_safe_mode_execute_blocks_all_dangerous_tools() {
+        let registry = build_all_groups_registry();
+        let config = ToolConfig::safe_mode();
+        let context = ToolContext::default();
+
+        let dangerous_tools = vec![
+            "twitter_post", "agent_send", "discord_write", "exec",
+            "edit_file", "web3_tx", "read_file", "moltx", "memory_write",
+            "system_tool",
+        ];
+
+        for tool_name in dangerous_tools {
+            let result = registry.execute(
+                tool_name,
+                serde_json::json!({}),
+                &context,
+                Some(&config),
+            ).await;
+
+            assert!(
+                !result.success,
+                "Tool '{}' must be BLOCKED at execution time in safe mode, but it succeeded",
+                tool_name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_safe_mode_execute_allows_safe_tools() {
+        let registry = build_all_groups_registry();
+        let config = ToolConfig::safe_mode();
+        let context = ToolContext::default();
+
+        // Allow-listed tools should execute successfully
+        for tool_name in crate::tools::types::SAFE_MODE_ALLOW_LIST {
+            let result = registry.execute(
+                tool_name,
+                serde_json::json!({}),
+                &context,
+                Some(&config),
+            ).await;
+
+            assert!(
+                result.success,
+                "Safe tool '{}' should be ALLOWED in safe mode, but was blocked: {:?}",
+                tool_name, result.error
+            );
+        }
+
+        // Web tools should also work
+        let result = registry.execute(
+            "web_fetch",
+            serde_json::json!({}),
+            &context,
+            Some(&config),
+        ).await;
+        assert!(result.success, "web_fetch should be allowed in safe mode");
+    }
+
+    #[test]
+    fn test_safe_mode_exhaustive_no_tool_from_real_registry_leaks() {
+        // Use the REAL full registry with ALL registered tools
+        let registry = crate::tools::create_default_registry();
+        let config = ToolConfig::safe_mode();
+
+        let allowed = registry.get_allowed_tools(&config);
+        let allowed_names: Vec<String> = allowed.iter().map(|t| t.definition().name.clone()).collect();
+
+        // Every allowed tool must be EITHER in the allow list OR in the Web group
+        for tool in &allowed {
+            let name = tool.definition().name;
+            let group = tool.group();
+            let in_allow_list = crate::tools::types::SAFE_MODE_ALLOW_LIST.contains(&name.as_str());
+            let is_web = group == ToolGroup::Web;
+
+            assert!(
+                in_allow_list || is_web,
+                "Tool '{}' (group: {:?}) leaked through safe mode! It is not in SAFE_MODE_ALLOW_LIST and not a Web tool. Allowed tools: {:?}",
+                name, group, allowed_names
+            );
+        }
+    }
+
+    #[test]
+    fn test_safe_mode_specifically_blocks_twitter_post_in_real_registry() {
+        // Use the REAL registry — the actual twitter_post tool with its actual group
+        let registry = crate::tools::create_default_registry();
+        let config = ToolConfig::safe_mode();
+
+        let allowed = registry.get_allowed_tools(&config);
+        let allowed_names: Vec<String> = allowed.iter().map(|t| t.definition().name.clone()).collect();
+
+        assert!(
+            !allowed_names.contains(&"twitter_post".to_string()),
+            "twitter_post MUST NOT appear in safe mode real registry tools. Got: {:?}",
+            allowed_names
+        );
+    }
+
+    #[test]
+    fn test_safe_mode_config_is_immutable_from_channel_overrides() {
+        // Prove that ToolConfig::safe_mode() produces a fixed config
+        // regardless of what the channel had before
+        let config = ToolConfig::safe_mode();
+
+        // Profile must be SafeMode
+        assert_eq!(config.profile, crate::tools::types::ToolProfile::SafeMode);
+        // Deny list must be empty (so allow_list + profile are the only gates)
+        assert!(config.deny_list.is_empty());
+        // Allow list must match SAFE_MODE_ALLOW_LIST exactly
+        let expected: Vec<String> = crate::tools::types::SAFE_MODE_ALLOW_LIST.iter().map(|s| s.to_string()).collect();
+        assert_eq!(config.allow_list, expected);
+        // Allowed groups must be only "web"
+        assert_eq!(config.allowed_groups, vec!["web".to_string()]);
     }
 }

@@ -18,7 +18,7 @@ impl EventBroadcaster {
     /// Subscribe a new client and return (client_id, receiver)
     pub fn subscribe(&self) -> (String, mpsc::Receiver<GatewayEvent>) {
         let client_id = Uuid::new_v4().to_string();
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel(1000);
         self.clients.insert(client_id.clone(), tx);
         log::debug!("Client {} subscribed to events", client_id);
         (client_id, rx)
@@ -58,13 +58,25 @@ impl EventBroadcaster {
             let client_id = entry.key().clone();
             let sender = entry.value();
 
-            if sender.try_send(event.clone()).is_err() {
-                // Client channel full or closed
-                failed_clients.push(client_id);
+            match sender.try_send(event.clone()) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    // Channel full — drop this event but keep the subscriber alive.
+                    // Removing the subscriber here would silently kill all future
+                    // events (including say_to_user delivery to Telegram/Discord).
+                    log::warn!(
+                        "[BROADCAST] Channel full for client {}, dropping '{}' event",
+                        client_id, event_name
+                    );
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    // Receiver dropped — subscriber is gone, clean up
+                    failed_clients.push(client_id);
+                }
             }
         }
 
-        // Clean up failed clients
+        // Clean up actually-disconnected clients (not just slow ones)
         for client_id in failed_clients {
             self.clients.remove(&client_id);
             log::debug!("Removed disconnected client {}", client_id);

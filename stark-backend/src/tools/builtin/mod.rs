@@ -34,9 +34,9 @@ pub use cryptocurrency::{
     load_networks, load_tokens, BridgeUsdcTool, BroadcastWeb3TxTool, DecodeCalldataTool,
     DexScreenerTool, ListQueuedWeb3TxTool, PolymarketTradeTool, RegisterSetTool,
     SelectWeb3NetworkTool, SendEthTool, ToRawAmountTool, TokenLookupTool, Web3FunctionCallTool,
-    X402AgentInvokeTool, X402FetchTool, X402PostTool, X402RpcTool,
+    Web3PresetFunctionCallTool, X402AgentInvokeTool, X402FetchTool, X402PostTool, X402RpcTool,
 };
-pub use social_media::{DiscordLookupTool, DiscordReadTool, DiscordWriteTool, GithubUserTool, TwitterPostTool};
+pub use social_media::{DiscordLookupTool, DiscordReadTool, DiscordWriteTool, GithubUserTool, TelegramReadTool, TwitterPostTool};
 
 // Re-exports from individual tools
 pub use process_status::ProcessStatusTool;

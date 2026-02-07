@@ -12,7 +12,7 @@ pub use register::{PresetOrCustom, RegisterStore};
 pub use registry::{Tool, ToolRegistry};
 pub use types::{
     PropertySchema, ToolConfig, ToolContext, ToolDefinition, ToolExecution, ToolGroup,
-    ToolInputSchema, ToolProfile, ToolResult,
+    ToolInputSchema, ToolProfile, ToolResult, SAFE_MODE_ALLOW_LIST,
 };
 
 use std::sync::Arc;
@@ -46,6 +46,7 @@ fn register_all_tools(registry: &mut ToolRegistry) {
     registry.register(Arc::new(builtin::BroadcastWeb3TxTool::new()));
     registry.register(Arc::new(builtin::ListQueuedWeb3TxTool::new()));
     registry.register(Arc::new(builtin::Web3FunctionCallTool::new()));
+    registry.register(Arc::new(builtin::Web3PresetFunctionCallTool::new()));
     registry.register(Arc::new(builtin::DecodeCalldataTool::new()));
     registry.register(Arc::new(builtin::TokenLookupTool::new()));
     registry.register(Arc::new(builtin::ToRawAmountTool::new()));
@@ -88,6 +89,7 @@ fn register_all_tools(registry: &mut ToolRegistry) {
     registry.register(Arc::new(builtin::DiscordWriteTool::new()));
     registry.register(Arc::new(builtin::DiscordLookupTool::new()));
     registry.register(Arc::new(builtin::TwitterPostTool::new()));
+    registry.register(Arc::new(builtin::TelegramReadTool::new()));
 
     // Discord hooks tools
     registry.register(Arc::new(crate::discord_hooks::tools::DiscordResolveUserTool::new()));

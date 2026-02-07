@@ -1,11 +1,11 @@
 ---
 name: local_wallet
 description: "Check balances and interact with the local burner wallet using RPC calls."
-version: 2.3.0
+version: 2.4.0
 author: starkbot
 metadata: {"clawdbot":{"emoji":"wallet"}}
 tags: [wallet, crypto, finance, local, burner, address, base, ethereum, rpc]
-requires_tools: [token_lookup, ask_user, x402_rpc, web3_function_call, register_set]
+requires_tools: [token_lookup, ask_user, x402_rpc, web3_preset_function_call, register_set]
 ---
 
 # Local Wallet Access
@@ -16,7 +16,7 @@ Check balances and interact with the local burner wallet via RPC calls.
 
 **DO NOT call `use_skill` again.** This skill file contains instructions. You must now:
 1. Read these instructions
-2. Call the actual tools directly (e.g., `x402_rpc`, `ask_user`, `register_set`, `web3_function_call`)
+2. Call the actual tools directly (e.g., `x402_rpc`, `ask_user`, `register_set`, `web3_preset_function_call`)
 3. Look for context about the currently selected network
 
 **Example:** To check ETH balance, call `x402_rpc`:
@@ -54,7 +54,7 @@ The result is a hex value in wei. Convert to ETH by dividing by 10^18.
 
 ## Step 3: Check ERC20 Token Balance
 
-**⚠️ CRITICAL: ALWAYS use the `erc20_balance` preset - NEVER manually construct a balanceOf call!**
+**ALWAYS use the `erc20_balance` preset - NEVER manually construct a balanceOf call!**
 
 The preset automatically uses your `wallet_address` (from intrinsic register). If you manually call balanceOf with the wrong address, you'll get incorrect results.
 
@@ -70,9 +70,9 @@ cache_as: token_address
 
 This will automatically cache the address in the `token_address` register for the next step.
 
-### 3b. Get the balance using `web3_function_call`
+### 3b. Get the balance using `web3_preset_function_call`
 
-```tool:web3_function_call
+```tool:web3_preset_function_call
 preset: erc20_balance
 network: base
 call_only: true
@@ -94,13 +94,13 @@ ETH, WETH, USDC, USDT, DAI, WBTC
 ```tool:ask_user
 question: Which network would you like me to check?
 options: ["Base", "Ethereum Mainnet", "Polygon"]
-default:  < current network > 
+default:  < current network >
 ```
 
 2. **After user responds**, call `x402_rpc`:
 ```tool:x402_rpc
 preset: get_balance
-network:  < current network > 
+network:  < current network >
 ```
 
 3. **Convert and report**: Result is hex wei (e.g., `"0x2386f26fc10000"` = 0.01 ETH).
@@ -110,14 +110,14 @@ network:  < current network >
 1. **Look up token:**
 ```tool:token_lookup
 symbol: USDC
-network: < current network > 
+network: < current network >
 cache_as: token_address
 ```
 
 2. **Get balance:**
-```tool:web3_function_call
+```tool:web3_preset_function_call
 preset: erc20_balance
-network:  < current network > 
+network:  < current network >
 call_only: true
 ```
 
@@ -128,14 +128,14 @@ call_only: true
 1. **Look up STARKBOT token:**
 ```tool:token_lookup
 symbol: STARKBOT
-network: < current network > 
+network: < current network >
 cache_as: token_address
 ```
 
 2. **Get balance:**
-```tool:web3_function_call
+```tool:web3_preset_function_call
 preset: erc20_balance
-network: < current network > 
+network: < current network >
 call_only: true
 ```
 
@@ -151,7 +151,7 @@ call_only: true
 | `gas_price` | Get current gas price | none |
 | `block_number` | Get current block | none |
 
-### web3_function_call presets
+### web3_preset_function_call presets
 | Preset | Description | Registers Used |
 |--------|-------------|----------------|
 | `erc20_balance` | Get any ERC20 token balance | `wallet_address`, `token_address` |
@@ -165,11 +165,11 @@ call_only: true
 - **ALWAYS ask for network if not specified** - don't assume!
 - Remember decimals: ETH/WETH = 18, USDC = 6
 
-## ⚠️ COMMON MISTAKE TO AVOID
+## COMMON MISTAKE TO AVOID
 
 **NEVER manually construct a balanceOf call like this:**
 ```tool:web3_function_call
-# ❌ WRONG - This checks the CONTRACT's balance, not YOUR wallet!
+# WRONG - This checks the CONTRACT's balance, not YOUR wallet!
 abi: erc20
 contract: "0x587..."
 function: balanceOf
@@ -178,10 +178,10 @@ call_only: true
 ```
 
 **ALWAYS use the preset instead:**
-```tool:web3_function_call
-# ✅ CORRECT - Preset automatically uses wallet_address register
+```tool:web3_preset_function_call
+# CORRECT - Preset automatically uses wallet_address register
 preset: erc20_balance
-network:  < current network >   (base, polygon, mainnet, etc) 
+network:  < current network >   (base, polygon, mainnet, etc)
 call_only: true
 ```
 

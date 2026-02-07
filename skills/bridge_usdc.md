@@ -1,12 +1,12 @@
 ---
 name: bridge_usdc
 description: "Bridge USDC between chains (Base, Polygon, Ethereum, Arbitrum, Optimism) via Across Protocol"
-version: 1.0.0
+version: 1.1.0
 author: starkbot
 homepage: https://across.to
 metadata: {"requires_auth": false, "clawdbot":{"emoji":"🌉"}}
 tags: [bridge, usdc, cross-chain, defi, polygon, base, ethereum, arbitrum, optimism, across]
-requires_tools: [bridge_usdc, broadcast_web3_tx, list_queued_web3_tx, web3_function_call]
+requires_tools: [bridge_usdc, broadcast_web3_tx, list_queued_web3_tx, web3_preset_function_call]
 ---
 
 # USDC Cross-Chain Bridge Skill
@@ -30,7 +30,7 @@ Bridge USDC between supported chains using Across Protocol's fast bridge (~2 sec
 | Tool | Purpose |
 |------|---------|
 | `bridge_usdc` | Create bridge transaction via Across Protocol |
-| `web3_function_call` | Check USDC balance before bridging |
+| `web3_preset_function_call` | Check USDC balance before bridging |
 | `list_queued_web3_tx` | Review queued transactions |
 | `broadcast_web3_tx` | Send transactions to network |
 
@@ -47,7 +47,7 @@ key: token_address
 value: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 ```
 
-```tool:web3_function_call
+```tool:web3_preset_function_call
 preset: erc20_balance
 network: base
 call_only: true
@@ -214,13 +214,13 @@ GET https://app.across.to/api/deposit/status?depositId=<deposit_id>&originChainI
 
 All chains can bridge to all other chains:
 
-| From ↓ / To → | ETH | Base | Polygon | Arbitrum | Optimism |
-|---------------|-----|------|---------|----------|----------|
-| Ethereum | - | ✓ | ✓ | ✓ | ✓ |
-| Base | ✓ | - | ✓ | ✓ | ✓ |
-| Polygon | ✓ | ✓ | - | ✓ | ✓ |
-| Arbitrum | ✓ | ✓ | ✓ | - | ✓ |
-| Optimism | ✓ | ✓ | ✓ | ✓ | - |
+| From / To | ETH | Base | Polygon | Arbitrum | Optimism |
+|-----------|-----|------|---------|----------|----------|
+| Ethereum | - | Y | Y | Y | Y |
+| Base | Y | - | Y | Y | Y |
+| Polygon | Y | Y | - | Y | Y |
+| Arbitrum | Y | Y | Y | - | Y |
+| Optimism | Y | Y | Y | Y | - |
 
 ---
 

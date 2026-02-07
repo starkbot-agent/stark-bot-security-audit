@@ -462,6 +462,11 @@ impl MessageDispatcher {
             Err(e) => {
                 let error = format!("Database error: {}", e);
                 log::error!("{}", error);
+                // Store error as assistant message so it's visible in the session
+                let _ = self.db.add_session_message(
+                    session.id, DbMessageRole::Assistant,
+                    &format!("[Error] {}", error), None, None, None, None,
+                );
                 self.execution_tracker.complete_execution(message.channel_id);
                 return DispatchResult::error(error);
             }
@@ -490,6 +495,11 @@ impl MessageDispatcher {
                 Err(e) => {
                     let error = format!("Failed to create AI client: {}", e);
                     log::error!("{}", error);
+                    // Store error as assistant message so it's visible in the session
+                    let _ = self.db.add_session_message(
+                        session.id, DbMessageRole::Assistant,
+                        &format!("[Error] {}", error), None, None, None, None,
+                    );
                     self.broadcaster.broadcast(GatewayEvent::agent_error(message.channel_id, &error));
                     self.execution_tracker.complete_execution(message.channel_id);
                     return DispatchResult::error(error);
@@ -502,6 +512,11 @@ impl MessageDispatcher {
             Err(e) => {
                 let error = format!("Failed to create AI client: {}", e);
                 log::error!("{}", error);
+                // Store error as assistant message so it's visible in the session
+                let _ = self.db.add_session_message(
+                    session.id, DbMessageRole::Assistant,
+                    &format!("[Error] {}", error), None, None, None, None,
+                );
                 self.broadcaster.broadcast(GatewayEvent::agent_error(
                     message.channel_id,
                     &error,
@@ -537,36 +552,10 @@ impl MessageDispatcher {
             if let Err(e) = self.db.set_session_safe_mode(session.id) {
                 log::warn!("[DISPATCH] Failed to set session safe_mode: {}", e);
             }
-            tool_config.profile = crate::tools::ToolProfile::SafeMode;
-            // Convert ToolGroup enum to String for allowed_groups
-            // SafeMode allows: Web group only
-            tool_config.allowed_groups = tool_config.profile.allowed_groups()
-                .iter()
-                .map(|g| g.as_str().to_string())
-                .collect();
-            // Explicitly allow specific safe tools from other groups:
-            // - set_agent_subtype: Changes agent mode per-session (safe, no persistence)
-            // - token_lookup: Read-only token info lookup (safe)
-            // - say_to_user: Send message to user (safe)
-            // - task_fully_completed: Mark task done (safe)
-            // - memory_read: Read-only memory retrieval (sandboxed to safemode/ in safe mode)
-            // - memory_search: Read-only memory search (sandboxed to safemode/ in safe mode)
-            // - discord_read: Read-only Discord operations (safe)
-            // - discord_lookup: Read-only Discord server/channel lookup (safe)
-            // NOTE: ask_user is NOT included - Twitter is one-shot, can't wait for response
-            // NOTE: discord_write is NOT included - write operations are admin only
-            tool_config.allow_list = vec![
-                "set_agent_subtype".to_string(),
-                "token_lookup".to_string(),
-                "say_to_user".to_string(),
-                "task_fully_completed".to_string(),
-                "memory_read".to_string(),
-                "memory_search".to_string(),
-                "discord_read".to_string(),
-                "discord_lookup".to_string(),
-            ];
-            // Clear any deny list that might interfere
-            tool_config.deny_list.clear();
+            // Replace the entire tool config with the canonical safe mode config.
+            // ToolConfig::safe_mode() is the single source of truth for safe mode permissions.
+            // This discards any channel-level overrides — safe mode is absolute.
+            tool_config = crate::tools::ToolConfig::safe_mode();
         }
 
         // Debug: Log tool configuration
@@ -706,6 +695,7 @@ impl MessageDispatcher {
             .with_channel(message.channel_id, message.channel_type.clone())
             .with_user(message.user_id.clone())
             .with_session(session.id)
+            .with_identity(identity.identity_id.clone())
             .with_workspace(workspace_dir.clone())
             .with_broadcaster(self.broadcaster.clone())
             .with_database(self.db.clone())
@@ -962,6 +952,19 @@ impl MessageDispatcher {
             Err(e) => {
                 let error = format!("AI generation error ({}): {}", archetype_id, e);
                 log::error!("{}", error);
+
+                // Store error as assistant message so it's visible in the session
+                if let Err(db_err) = self.db.add_session_message(
+                    session.id,
+                    DbMessageRole::Assistant,
+                    &format!("[Error] {}", error),
+                    None,
+                    None,
+                    None,
+                    None,
+                ) {
+                    log::error!("Failed to store error message in session: {}", db_err);
+                }
 
                 // Broadcast error to frontend
                 self.broadcaster.broadcast(GatewayEvent::agent_error(
@@ -3205,7 +3208,8 @@ impl MessageDispatcher {
             prompt.push_str("- set_agent_subtype: Switch your toolbox/mode\n");
             prompt.push_str("- token_lookup: Look up token addresses (read-only)\n");
             prompt.push_str("- memory_read, memory_search: Read-only memory retrieval (public memory only)\n");
-            prompt.push_str("- discord_read, discord_lookup: Read Discord messages and server info\n\n");
+            prompt.push_str("- discord_read, discord_lookup: Read Discord messages and server info\n");
+            prompt.push_str("- telegram_read: Read Telegram chat info, members, admins, and conversation history\n\n");
             prompt.push_str("**BLOCKED (not available):** exec, filesystem, web3_tx, subagent, modify_soul, manage_skills\n\n");
             prompt.push_str("CRITICAL SECURITY RULES:\n");
             prompt.push_str("1. **NEVER REVEAL SECRETS**: Do NOT output any API keys, private keys, passwords, secrets, or anything that looks like a key (long alphanumeric strings, hex strings starting with 0x, base64 encoded data). If you encounter such data in memory or elsewhere, DO NOT include it in your response.\n");

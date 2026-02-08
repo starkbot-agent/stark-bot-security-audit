@@ -222,9 +222,12 @@ impl Tool for DecodeCalldataTool {
         let mut contract_address: Option<String> = None;
         let mut tx_value: Option<String> = None;
 
+        let used_raw_calldata;
         let calldata_hex = if let Some(ref cd) = params.calldata {
+            used_raw_calldata = true;
             cd.clone()
         } else if let Some(ref reg_name) = params.calldata_register {
+            used_raw_calldata = false;
             // Read from register
             match context.registers.get(reg_name) {
                 Some(v) => {
@@ -281,6 +284,7 @@ impl Tool for DecodeCalldataTool {
                 }
             }
         } else {
+            used_raw_calldata = false;
             return ToolResult::error("Must provide either 'calldata' or 'calldata_register'");
         };
 
@@ -329,6 +333,17 @@ impl Tool for DecodeCalldataTool {
                  Register '{}' will NOT be set and downstream preset execution will fail. \
                  Check that the source data contains a valid 'to' address.",
                 params.calldata_register.as_deref().unwrap_or("?"),
+                contract_key,
+            ));
+        } else if used_raw_calldata {
+            // AI passed raw calldata hex instead of using calldata_register.
+            // Contract address and value can ONLY be extracted from a register object.
+            // This is almost always a mistake — fail loudly so the AI self-corrects.
+            return ToolResult::error(format!(
+                "ERROR: You passed raw 'calldata' but register '{}' was NOT set because contract address \
+                 can only be extracted from a register (which contains 'to', 'data', 'value' fields). \
+                 You MUST use 'calldata_register' instead of 'calldata'. \
+                 For swap: use {{\"calldata_register\": \"swap_quote\", \"cache_as\": \"swap\", \"abi\": \"0x_settler\"}}",
                 contract_key,
             ));
         }

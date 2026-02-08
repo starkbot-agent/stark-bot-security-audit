@@ -153,7 +153,7 @@ Example workflow:
 
 ### Parameters:
 - `message` (required): The message to show the user. Include ALL relevant details.
-- `finished_task` (optional, boolean): Set to `true` when this is your final response and the task is complete. This ends the agentic loop.
+- `finished_task` (optional, boolean): Set to `true` when this is your final response and the task is complete. This ends the agentic loop. **WARNING: When a task queue is active, `finished_task: true` marks the CURRENT task as complete and advances to the next task. Do NOT set it until ALL steps of the current task are done.** Using it prematurely will skip tasks.
 
 ### Finishing a task:
 ```json

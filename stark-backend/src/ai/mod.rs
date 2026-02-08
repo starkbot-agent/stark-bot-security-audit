@@ -48,10 +48,28 @@ pub struct Message {
     pub content: String,
 }
 
+/// A single iteration's INPUT (what was sent to the AI) and OUTPUT (what came back).
+#[derive(Debug, Clone, Serialize)]
+pub struct TraceEntry {
+    pub iteration: usize,
+    /// INPUT: messages sent to the AI (system prompt + conversation history)
+    pub input_messages: Vec<Message>,
+    /// INPUT: tool call/response history from previous iterations
+    pub input_tool_history: Vec<ToolHistoryEntry>,
+    /// INPUT: available tool definitions
+    pub input_tools: Vec<String>, // just tool names to keep it readable
+    /// OUTPUT: the AI's response
+    pub output_response: Option<AiResponse>,
+    /// OUTPUT: error if the AI call failed
+    pub output_error: Option<String>,
+}
+
 /// Mock AI client for integration tests — returns pre-configured responses from a queue.
+/// Also captures a trace of INPUT/OUTPUT for each iteration for auditing.
 #[derive(Clone)]
 pub struct MockAiClient {
     responses: Arc<Mutex<VecDeque<Result<AiResponse, AiError>>>>,
+    trace: Arc<Mutex<Vec<TraceEntry>>>,
 }
 
 impl MockAiClient {
@@ -59,13 +77,48 @@ impl MockAiClient {
     pub fn new(responses: Vec<Result<AiResponse, AiError>>) -> Self {
         MockAiClient {
             responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+            trace: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     /// Pop the next response from the queue, or return a fallback if exhausted.
+    /// Also records the INPUT/OUTPUT trace entry.
+    fn next_response_traced(
+        &self,
+        messages: Vec<Message>,
+        tool_history: Vec<ToolHistoryEntry>,
+        tools: Vec<crate::tools::ToolDefinition>,
+    ) -> Result<AiResponse, AiError> {
+        let mut queue = self.responses.lock().unwrap();
+        let result = queue.pop_front().unwrap_or_else(|| Ok(AiResponse::text("(mock exhausted)".to_string())));
+
+        let iteration = {
+            let trace = self.trace.lock().unwrap();
+            trace.len() + 1
+        };
+
+        let entry = TraceEntry {
+            iteration,
+            input_messages: messages,
+            input_tool_history: tool_history,
+            input_tools: tools.iter().map(|t| t.name.clone()).collect(),
+            output_response: result.as_ref().ok().cloned(),
+            output_error: result.as_ref().err().map(|e| e.message.clone()),
+        };
+
+        self.trace.lock().unwrap().push(entry);
+        result
+    }
+
+    /// Pop the next response without tracing (for simple generate_text calls).
     fn next_response(&self) -> Result<AiResponse, AiError> {
         let mut queue = self.responses.lock().unwrap();
         queue.pop_front().unwrap_or_else(|| Ok(AiResponse::text("(mock exhausted)".to_string())))
+    }
+
+    /// Get the captured trace entries for auditing.
+    pub fn get_trace(&self) -> Vec<TraceEntry> {
+        self.trace.lock().unwrap().clone()
     }
 }
 
@@ -249,7 +302,7 @@ impl AiClient {
                     .await
                     .map_err(AiError::from)
             }
-            AiClient::Mock(client) => client.next_response(),
+            AiClient::Mock(client) => client.next_response_traced(messages, tool_history, tools),
         }
     }
 

@@ -197,6 +197,11 @@ impl MessageDispatcher {
         self
     }
 
+    #[cfg(test)]
+    pub fn get_mock_trace(&self) -> Vec<crate::ai::TraceEntry> {
+        self.mock_ai_client.as_ref().map(|m| m.get_trace()).unwrap_or_default()
+    }
+
     /// Create a dispatcher without tool support (for backwards compatibility)
     pub fn new_without_tools(db: Arc<Database>, broadcaster: Arc<EventBroadcaster>) -> Self {
         // Create a minimal execution tracker for legacy use
@@ -1677,6 +1682,19 @@ impl MessageDispatcher {
                 }
             }
 
+            // Update system prompt every iteration so the AI sees the current task,
+            // mode changes, and any context updates from the orchestrator.
+            if let Some(system_msg) = conversation.first_mut() {
+                if system_msg.role == MessageRole::System {
+                    let orchestrator_prompt = orchestrator.get_system_prompt();
+                    system_msg.content = format!(
+                        "{}\n\n---\n\n{}",
+                        orchestrator_prompt,
+                        archetype.enhance_system_prompt(&messages[0].content, &current_tools)
+                    );
+                }
+            }
+
             // Generate with native tool support and progress notifications
             let ai_response = match self.generate_with_progress(
                 &client,
@@ -2040,9 +2058,11 @@ impl MessageDispatcher {
                             }
                             skill_result
                         } else {
-                            // Check if subtype is None - only allow set_agent_subtype in that case
+                            // Check if subtype is None - allow System tools (say_to_user, task_fully_completed, etc.)
+                            // but block non-System tools until set_agent_subtype is called
                             let current_subtype = orchestrator.current_subtype();
-                            if !current_subtype.is_selected() && call.name != "set_agent_subtype" && call.name != "define_tasks" {
+                            let is_system_tool = current_tools.iter().any(|t| t.name == call.name && t.group == crate::tools::types::ToolGroup::System);
+                            if !current_subtype.is_selected() && !is_system_tool {
                                 log::warn!(
                                     "[SUBTYPE] Blocked tool '{}' - no subtype selected. Must call set_agent_subtype first.",
                                     call.name
@@ -2624,6 +2644,18 @@ impl MessageDispatcher {
                 }
             }
 
+            // Update system prompt every iteration so the AI sees the current task
+            if let Some(system_msg) = conversation.first_mut() {
+                if system_msg.role == MessageRole::System {
+                    let orchestrator_prompt = orchestrator.get_system_prompt();
+                    system_msg.content = format!(
+                        "{}\n\n---\n\n{}",
+                        orchestrator_prompt,
+                        archetype.enhance_system_prompt(&messages[0].content, &tools)
+                    );
+                }
+            }
+
             let (ai_content, payment) = match client.generate_text_with_events(
                 conversation.clone(),
                 &self.broadcaster,
@@ -2825,9 +2857,11 @@ impl MessageDispatcher {
                                     }
                                     skill_result
                                 } else {
-                                    // Check if subtype is None - only allow set_agent_subtype in that case
+                                    // Check if subtype is None - allow System tools (say_to_user, task_fully_completed, etc.)
+                                    // but block non-System tools until set_agent_subtype is called
                                     let current_subtype = orchestrator.current_subtype();
-                                    if !current_subtype.is_selected() && tool_call.tool_name != "set_agent_subtype" && tool_call.tool_name != "define_tasks" {
+                                    let is_system_tool = tools.iter().any(|t| t.name == tool_call.tool_name && t.group == crate::tools::types::ToolGroup::System);
+                                    if !current_subtype.is_selected() && !is_system_tool {
                                         log::warn!(
                                             "[SUBTYPE] Blocked tool '{}' - no subtype selected. Must call set_agent_subtype first.",
                                             tool_call.tool_name

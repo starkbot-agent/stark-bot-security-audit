@@ -154,21 +154,25 @@ impl Orchestrator {
 
         let base_prompt = include_str!("prompts/assistant.md");
 
-        let mut prompt = base_prompt.to_string();
-        prompt.push_str("\n\n---\n\n");
-        prompt.push_str(&self.format_context_summary());
+        let mut prompt = String::new();
 
-        // Inject current task if we have one
+        // CURRENT TASK goes FIRST — highest priority for the AI to see
         if let Some(task) = self.context.task_queue.current_task() {
             let total = self.context.task_queue.total();
             let completed = self.context.task_queue.completed_count();
             prompt.push_str(&format!(
-                "\n\n## CURRENT TASK ({}/{})\n\n{}\n\n**IMPORTANT**: Focus on completing this specific task. When done, call `task_fully_completed` with a summary of what you accomplished.",
+                "# >>> CURRENT TASK ({}/{}) <<<\n\n{}\n\n\
+                 **YOU MUST**: Complete ONLY this task. Do NOT skip ahead. \
+                 When done, call `say_to_user` with `finished_task: true` or `task_fully_completed` with a summary.\n\n---\n\n",
                 completed + 1,
                 total,
                 task.description
             ));
         }
+
+        prompt.push_str(base_prompt);
+        prompt.push_str("\n\n---\n\n");
+        prompt.push_str(&self.format_context_summary());
 
         prompt
     }

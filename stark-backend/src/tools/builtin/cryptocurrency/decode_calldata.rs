@@ -228,16 +228,42 @@ impl Tool for DecodeCalldataTool {
             // Read from register
             match context.registers.get(reg_name) {
                 Some(v) => {
+                    log::info!("[decode_calldata] Register '{}' type={}, keys={:?}",
+                        reg_name,
+                        match &v { Value::Object(_) => "object", Value::String(_) => "string", Value::Array(_) => "array", Value::Number(_) => "number", Value::Bool(_) => "bool", Value::Null => "null" },
+                        v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
+                    );
                     // Could be a string directly, or an object with a "data" field
                     if let Some(s) = v.as_str() {
                         s.to_string()
                     } else if let Some(data) = v.get("data").and_then(|d| d.as_str()) {
                         // Also extract "to" (contract address) and "value" if present
-                        if let Some(to) = v.get("to").and_then(|t| t.as_str()) {
-                            contract_address = Some(to.to_string());
+                        // Handle any JSON type — stringify numbers, bools, etc.
+                        if let Some(to_val) = v.get("to") {
+                            match to_val {
+                                Value::String(s) => contract_address = Some(s.clone()),
+                                Value::Null => log::warn!("[decode_calldata] 'to' field is null in register '{}'", reg_name),
+                                other => {
+                                    let s = other.to_string().trim_matches('"').to_string();
+                                    log::warn!("[decode_calldata] 'to' field is not a string (type: {}), coercing to '{}'",
+                                        match other { Value::Number(_) => "number", Value::Bool(_) => "bool", _ => "other" }, s);
+                                    contract_address = Some(s);
+                                }
+                            }
+                        } else {
+                            log::warn!("[decode_calldata] No 'to' field in register '{}' — {}_contract will NOT be set", reg_name, params.cache_as);
                         }
-                        if let Some(val) = v.get("value").and_then(|t| t.as_str()) {
-                            tx_value = Some(val.to_string());
+                        if let Some(val_field) = v.get("value") {
+                            match val_field {
+                                Value::String(s) => tx_value = Some(s.clone()),
+                                Value::Number(n) => tx_value = Some(n.to_string()),
+                                Value::Null => log::warn!("[decode_calldata] 'value' field is null in register '{}'", reg_name),
+                                other => {
+                                    tx_value = Some(other.to_string().trim_matches('"').to_string());
+                                }
+                            }
+                        } else {
+                            log::warn!("[decode_calldata] No 'value' field in register '{}' — {}_value will NOT be set", reg_name, params.cache_as);
                         }
                         data.to_string()
                     } else {
@@ -291,12 +317,27 @@ impl Tool for DecodeCalldataTool {
         context.registers.set(&function_key, json!(function_name.clone()), "decode_calldata");
         context.registers.set(&params_key, json!(decoded_params.clone()), "decode_calldata");
 
-        // Store contract address and value if extracted
+        // Store contract address and value — these are REQUIRED for preset execution
+        // If the calldata came from an object register (e.g., swap_quote) and we couldn't
+        // extract "to", the downstream preset will fail. Fail early here instead.
         if let Some(ref addr) = contract_address {
             context.registers.set(&contract_key, json!(addr), "decode_calldata");
+        } else if params.calldata_register.is_some() {
+            // We read from a register that should have had "to" — this is a hard error
+            return ToolResult::error(format!(
+                "Failed to extract contract address ('to' field) from register '{}'. \
+                 Register '{}' will NOT be set and downstream preset execution will fail. \
+                 Check that the source data contains a valid 'to' address.",
+                params.calldata_register.as_deref().unwrap_or("?"),
+                contract_key,
+            ));
         }
         if let Some(ref val) = tx_value {
             context.registers.set(&value_key, json!(val), "decode_calldata");
+        } else if params.calldata_register.is_some() {
+            // value is less critical — default to "0" rather than failing
+            log::warn!("[decode_calldata] No 'value' extracted from register — defaulting {} to '0'", value_key);
+            context.registers.set(&value_key, json!("0"), "decode_calldata");
         }
 
         // Also set individual param registers for preset compatibility

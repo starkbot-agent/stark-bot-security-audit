@@ -1,7 +1,7 @@
 ---
 name: swap
 description: "Swap ERC20 tokens on Base using 0x DEX aggregator via quoter.defirelay.com"
-version: 8.2.0
+version: 8.4.0
 author: starkbot
 homepage: https://0x.org
 metadata: {"requires_auth": false, "clawdbot":{"emoji":"🔄"}}
@@ -10,19 +10,26 @@ requires_tools: [token_lookup, to_raw_amount, decode_calldata, web3_preset_funct
 ---
 
 # Token Swap Skill
- 
 
-## Step 1: Define the four tasks
+## CRITICAL RULES
+
+1. **ONE TASK AT A TIME.** Only do the work described in the CURRENT task. Do NOT work ahead.
+2. **Do NOT call `say_to_user` with `finished_task: true` until the current task is truly done.** Using `finished_task: true` advances the task queue — if you use it prematurely, tasks get skipped.
+3. **Use `say_to_user` WITHOUT `finished_task`** for progress updates. Only set `finished_task: true` OR call `task_fully_completed` when ALL steps in the current task are done.
+4. **Sequential tool calls only.** Never call two tools in parallel when the second depends on the first (e.g., never call `swap_execute` and `decode_calldata` in the same response).
+5. **Use exact parameter values shown.** Especially `cache_as: "swap"` — not "swap_params", not "swap_data", exactly `"swap"`.
+
+## Step 1: Define the five tasks
 
 Call `define_tasks` with all 5 tasks in order:
 
 ```json
 {"tool": "define_tasks", "tasks": [
-  "SWAP TASK 1/5 — Prepare: select network, look up sell and buy tokens, check balances, check Permit2 allowance. Report what you found. See swap skill 'Task 1' instructions.",
-  "SWAP TASK 2/5 — Approve sell token for Permit2 (SKIP if allowance was sufficient in Task 1): call erc20_approve_permit2 preset, broadcast, wait for confirmation. See swap skill 'Task 2' instructions.",
-  "SWAP TASK 3/5 — Get swap quote: convert sell amount to raw_units with to_raw_amount, fetch quote with x402_fetch swap_quote preset, decode calldata with decode_calldata using cache_as 'swap'. See swap skill 'Task 3' instructions.",
-  "SWAP TASK 4/5 — Execute swap: IMMEDIATELY call swap_execute preset, then IMMEDIATELY broadcast  ",
-  "SWAP TASK 5/5 —  Call verify_tx_broadcast and ONLY report success if VERIFIED or CONFIRMED. See swap skill 'Task 5' instructions."
+  "TASK 1 — Prepare: select network, look up sell+buy tokens, check Permit2 allowance. Call task_fully_completed when done. See swap skill 'Task 1'.",
+  "TASK 2 — Approve Permit2 (SKIP if allowance sufficient): call erc20_approve_permit2, broadcast, wait for confirmation. See swap skill 'Task 2'.",
+  "TASK 3 — Quote+Decode: call to_raw_amount, then x402_fetch swap_quote, then decode_calldata with cache_as 'swap'. ALL THREE steps required before completing. See swap skill 'Task 3'.",
+  "TASK 4 — Execute: call swap_execute preset THEN broadcast_web3_tx. Exactly 2 sequential tool calls. Do NOT call decode_calldata here. See swap skill 'Task 4'.",
+  "TASK 5 — Verify: call verify_tx_broadcast, report result. See swap skill 'Task 5'."
 ]}
 ```
 
@@ -65,11 +72,13 @@ Call `define_tasks` with all 5 tasks in order:
 
 ### 1e. Report findings and complete
 
-Tell the user what you found (token addresses, balances, whether approval is needed). Then:
+Tell the user what you found (token addresses, balances, whether approval is needed) using `say_to_user` with `finished_task: true`:
 
 ```json
-{"tool": "task_fully_completed", "summary": "Tokens looked up. Allowance: <sufficient/insufficient>. Ready for next step."}
+{"tool": "say_to_user", "message": "Found tokens: SELL=0x... BUY=0x...\nAllowance: sufficient/insufficient", "finished_task": true}
 ```
+
+**Do NOT proceed to approval or quoting in this task. Just report findings.**
 
 ---
 
@@ -100,7 +109,9 @@ After the approval is confirmed:
  
 ---
 
-## Task 3: Get swap quote
+## Task 3: Get swap quote AND decode it
+
+**This task has 3 steps. ALL THREE must complete before calling task_fully_completed.**
 
 ### 3a. Convert sell amount to raw units
 
@@ -116,15 +127,17 @@ After the approval is confirmed:
 
 If this fails after retries, STOP and tell the user.
 
-### 3c. Decode the quote
+### 3c. Decode the quote (REQUIRED — do NOT skip this step)
 
-**Use `cache_as: "swap"` exactly.** This sets `swap_param_0`–`swap_param_4`, `swap_contract`, `swap_value`.
+**Use `cache_as: "swap"` exactly — NOT "swap_params", NOT "swap_data", exactly `"swap"`.**
+This sets registers: `swap_contract`, `swap_param_0`–`swap_param_4`, `swap_value`.
+Task 4 depends on these registers being set.
 
 ```json
 {"tool": "decode_calldata", "abi": "0x_settler", "calldata_register": "swap_quote", "cache_as": "swap"}
 ```
 
-After decoding succeeds:
+**Only after decode_calldata succeeds**, complete the task:
 ```json
 {"tool": "task_fully_completed", "summary": "Quote fetched and decoded. Ready to execute swap."}
 ```
@@ -133,23 +146,35 @@ After decoding succeeds:
 
 ## Task 4: Execute the swap
 
-**  just execute and broadcast immediately  **
+**Exactly 2 tool calls, SEQUENTIALLY (one at a time, NOT in parallel):**
 
-### 4a. Execute the swap transaction
+**Do NOT call `decode_calldata` in this task — it was already done in Task 3.**
+The registers `swap_contract`, `swap_param_0`–`swap_param_4`, `swap_value` should already be set.
+
+### 4a. Create the swap transaction (FIRST call)
 
 ```json
 {"tool": "web3_preset_function_call", "preset": "swap_execute", "network": "<network>"}
 ```
 
-### 4b. Immediately broadcast the swap transaction
+Wait for the result. Extract the `uuid` from the response.
+
+### 4b. Broadcast it (SECOND call — after 4a succeeds)
 
 ```json
 {"tool": "broadcast_web3_tx", "uuid": "<uuid_from_4a>"}
 ```
 
-### 4c. VERIFY the result
+After broadcast succeeds:
+```json
+{"tool": "task_fully_completed", "summary": "Swap broadcast. Verifying next."}
+```
 
-Call `verify_tx_broadcast` to poll for the receipt, decode token transfer events, and AI-verify the result matches the user's intent:
+---
+
+## Task 5: Verify the swap
+
+Call `verify_tx_broadcast` to poll for the receipt, decode token transfer events, and confirm the result matches the user's intent:
 
 ```json
 {"tool": "verify_tx_broadcast"}
@@ -159,7 +184,7 @@ Read the output:
 
 - **"TRANSACTION VERIFIED"** → The swap succeeded AND the AI confirmed it matches the user's intent. Report success with tx hash and explorer link.
 - **"TRANSACTION CONFIRMED — INTENT MISMATCH"** → Confirmed on-chain but AI flagged a concern. Tell the user to check the explorer.
-- **"TRANSACTION REVERTED"** → The swap FAILED. Tell the user. 
+- **"TRANSACTION REVERTED"** → The swap failed. Tell the user.
 - **"CONFIRMATION TIMEOUT"** → Tell the user to check the explorer link.
 
-**Only call `task_fully_completed` if verify_tx_broadcast returned VERIFIED or CONFIRMED.**
+Call `task_fully_completed` when verify_tx_broadcast returned VERIFIED or CONFIRMED.

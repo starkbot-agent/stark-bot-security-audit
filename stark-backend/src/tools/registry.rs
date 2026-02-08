@@ -325,6 +325,7 @@ mod tests {
         registry.register(Arc::new(MockTool::new("discord_read", ToolGroup::Messaging)));
         registry.register(Arc::new(MockTool::new("discord_lookup", ToolGroup::Messaging)));
         registry.register(Arc::new(MockTool::new("telegram_read", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("define_tasks", ToolGroup::System)));
         registry
     }
 

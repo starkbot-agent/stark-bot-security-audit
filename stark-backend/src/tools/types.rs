@@ -736,6 +736,7 @@ pub const SAFE_MODE_ALLOW_LIST: &[&str] = &[
     "token_lookup",         // Read-only token info lookup (safe)
     "say_to_user",          // Send message to user (safe)
     "task_fully_completed", // Mark task done (safe)
+    "define_tasks",         // Organize tasks into queue (safe, no side effects)
     "memory_read",          // Read-only memory retrieval (sandboxed to safemode/ in safe mode)
     "memory_search",        // Read-only memory search (sandboxed to safemode/ in safe mode)
     "discord_read",         // Read-only Discord operations (safe)

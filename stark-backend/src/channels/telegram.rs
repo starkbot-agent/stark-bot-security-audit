@@ -318,6 +318,24 @@ pub async fn start_telegram_listener(
 
                 // Only handle text messages
                 if let Some(text) = msg.text() {
+                    // Passively log ALL messages for readHistory (before mention check)
+                    let passive_user = msg.from();
+                    let passive_user_id = passive_user.map(|u| u.id.to_string());
+                    let passive_user_name = passive_user.map(|u| {
+                        u.username.clone().unwrap_or_else(|| u.first_name.clone())
+                    });
+                    if let Err(e) = db.store_telegram_chat_message(
+                        channel_id,
+                        &msg.chat.id.to_string(),
+                        passive_user_id.as_deref(),
+                        passive_user_name.as_deref(),
+                        text,
+                        Some(&msg.id.to_string()),
+                        false,
+                    ) {
+                        log::warn!("Telegram: Failed to store passive chat message: {}", e);
+                    }
+
                     // Only respond if bot is @mentioned or replied to (all chat types including DMs)
                     let mentioned = is_bot_mentioned(text, &bot_username);
                     let is_reply_to_bot = msg.reply_to_message()
@@ -394,13 +412,46 @@ pub async fn start_telegram_listener(
                         );
                     }
 
+                    // Prepend recent chat context (like Twitter thread context)
+                    let message_text = {
+                        let chat_id_str = msg.chat.id.to_string();
+                        let recent = db.get_recent_telegram_chat_messages(channel_id, &chat_id_str, 6);
+                        match recent {
+                            Ok(msgs) if !msgs.is_empty() => {
+                                // Filter out the current message
+                                let context_msgs: Vec<_> = msgs.iter()
+                                    .filter(|m| m.platform_message_id.as_deref() != Some(&msg.id.to_string()))
+                                    .collect();
+                                if !context_msgs.is_empty() {
+                                    let mut ctx = String::from("[RECENT CHAT CONTEXT - recent messages in this Telegram group:]\n");
+                                    for m in &context_msgs {
+                                        let who = m.user_name.as_deref()
+                                            .unwrap_or(m.user_id.as_deref().unwrap_or("unknown"));
+                                        let tag = if m.is_bot_response { " [you]" } else { "" };
+                                        let preview = if m.content.len() > 300 {
+                                            format!("{}...", &m.content[..300])
+                                        } else {
+                                            m.content.clone()
+                                        };
+                                        ctx.push_str(&format!("@{}{}: {}\n", who, tag, preview));
+                                    }
+                                    ctx.push_str(&format!("\n[MESSAGE DIRECTED TO YOU:]\n{}", clean_text));
+                                    ctx
+                                } else {
+                                    clean_text.clone()
+                                }
+                            }
+                            _ => clean_text.clone(),
+                        }
+                    };
+
                     let normalized = NormalizedMessage {
                         channel_id,
                         channel_type: ChannelType::Telegram.to_string(),
                         chat_id: msg.chat.id.to_string(),
                         user_id,
                         user_name: user_name.clone(),
-                        text: clean_text,
+                        text: message_text,
                         message_id: Some(msg.id.to_string()),
                         session_mode: None,
                         selected_network: None,
@@ -664,6 +715,17 @@ pub async fn start_telegram_listener(
 
                     // Send final response
                     if result.error.is_none() && !result.response.is_empty() {
+                        // Log bot response in passive chat log
+                        let _ = db.store_telegram_chat_message(
+                            channel_id,
+                            &msg.chat.id.to_string(),
+                            Some(&bot_user_id.to_string()),
+                            Some(&bot_username),
+                            &result.response,
+                            None,
+                            true,
+                        );
+
                         let chunks = util::split_message(&result.response, 4096);
                         for chunk in chunks {
                             if let Err(e) = bot

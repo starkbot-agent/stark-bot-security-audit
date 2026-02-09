@@ -395,99 +395,77 @@ impl TelegramReadTool {
 
         let limit = params.limit.unwrap_or(20).min(100);
 
-        // If a chatId is provided, look up that specific chat's session.
-        // Otherwise use the current session_id from context.
-        let (session_id, chat_label) = if let Some(chat_id) = &params.chat_id {
-            // Build candidate session keys. When called cross-channel (e.g. from Discord or web),
-            // context.channel_id is the *calling* channel, not the Telegram channel.
-            // We try the current channel first, then fall back to all Telegram channels in the DB.
-            let mut candidate_channel_ids: Vec<i64> = Vec::new();
-
-            // If we're already on a Telegram channel, try it first
-            if context.channel_type.as_deref() == Some("telegram") {
-                if let Some(cid) = context.channel_id {
-                    candidate_channel_ids.push(cid);
-                }
-            }
-
-            // Fall back: collect all Telegram channel IDs from the DB
-            if let Ok(channels) = db.list_channels() {
-                for ch in channels {
-                    if ch.channel_type == "telegram" && !candidate_channel_ids.contains(&ch.id) {
-                        candidate_channel_ids.push(ch.id);
-                    }
-                }
-            }
-
-            // Try each candidate until we find a matching session
-            let mut found_session = None;
-            for cid in &candidate_channel_ids {
-                let session_key = format!("telegram:{}:{}", cid, chat_id);
-                match db.get_chat_session_by_key(&session_key) {
-                    Ok(Some(session)) => {
-                        found_session = Some(session);
-                        break;
-                    }
-                    Ok(None) => continue,
-                    Err(e) => return ToolResult::error(format!("Database error looking up session: {}", e)),
-                }
-            }
-
-            match found_session {
-                Some(session) => (session.id, format!("chat {}", chat_id)),
-                None => return ToolResult::error(format!(
-                    "No active session found for Telegram chat {}. The bot may not have interacted in that chat yet.",
-                    chat_id
-                )),
-            }
-        } else if let Some(sid) = context.session_id {
-            (sid, "current chat".to_string())
+        // Resolve chat_id: explicit param > context.platform_chat_id
+        let chat_id = if let Some(id) = &params.chat_id {
+            id.clone()
+        } else if let Some(id) = &context.platform_chat_id {
+            id.clone()
         } else {
-            return ToolResult::error("No chatId provided and no active session. Provide a 'chatId' to read history.");
+            return ToolResult::error("No chatId provided and no active chat context. Provide a 'chatId' to read history.");
         };
 
-        let messages = match db.get_recent_session_messages(session_id, limit) {
+        // Resolve channel_id: current channel if telegram, otherwise scan all telegram channels
+        let channel_id = if context.channel_type.as_deref() == Some("telegram") {
+            context.channel_id
+        } else {
+            // Cross-channel call — find a Telegram channel in the DB
+            db.list_channels().ok().and_then(|channels| {
+                channels.iter().find(|ch| ch.channel_type == "telegram").map(|ch| ch.id)
+            })
+        };
+
+        let channel_id = match channel_id {
+            Some(id) => id,
+            None => return ToolResult::error("No Telegram channel found. Configure a Telegram channel first."),
+        };
+
+        // Query the passive chat log (stores ALL messages, not just bot interactions)
+        let messages = match db.get_recent_telegram_chat_messages(channel_id, &chat_id, limit) {
             Ok(msgs) => msgs,
-            Err(e) => return ToolResult::error(format!("Failed to read message history: {}", e)),
+            Err(e) => return ToolResult::error(format!("Failed to read chat history: {}", e)),
         };
 
         if messages.is_empty() {
-            return ToolResult::success(format!("No messages found in {} (session {}).", chat_label, session_id));
+            return ToolResult::success(format!(
+                "No messages found in Telegram chat {}. The bot may not have seen any messages in this chat yet.",
+                chat_id
+            ));
         }
 
         let formatted: Vec<Value> = messages.iter().map(|m| {
             json!({
-                "role": m.role.as_str(),
-                "content": m.content,
                 "user_id": m.user_id,
                 "user_name": m.user_name,
-                "created_at": m.created_at.to_rfc3339(),
+                "content": m.content,
+                "is_bot": m.is_bot_response,
+                "created_at": m.created_at,
             })
         }).collect();
 
         let summary: Vec<String> = messages.iter().map(|m| {
             let who = m.user_name.as_deref()
-                .unwrap_or(m.user_id.as_deref().unwrap_or(m.role.as_str()));
-            let content_preview = if m.content.len() > 120 {
-                format!("{}...", &m.content[..120])
+                .unwrap_or(m.user_id.as_deref().unwrap_or("unknown"));
+            let tag = if m.is_bot_response { " [bot]" } else { "" };
+            let content_preview = if m.content.len() > 200 {
+                format!("{}...", &m.content[..200])
             } else {
                 m.content.clone()
             };
-            format!("[{}] {}: {}", m.role.as_str(), who, content_preview)
+            format!("[{}] {}{}: {}", m.created_at, who, tag, content_preview)
         }).collect();
 
         let message = format!(
-            "Read {} messages from {} (session {}):\n\n{}",
+            "Read {} messages from Telegram chat {}:\n\n{}",
             messages.len(),
-            chat_label,
-            session_id,
+            chat_id,
             summary.join("\n")
         );
 
         ToolResult::success(message).with_metadata(json!({
             "messages": formatted,
             "count": messages.len(),
-            "session_id": session_id
+            "chat_id": chat_id,
+            "channel_id": channel_id,
         }))
     }
 }

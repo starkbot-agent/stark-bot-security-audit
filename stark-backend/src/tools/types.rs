@@ -370,6 +370,9 @@ pub struct ToolContext {
     pub memory_store: Option<Arc<MemoryStore>>,
     /// Wallet provider for signing transactions (Standard or Flash mode)
     pub wallet_provider: Option<Arc<dyn WalletProvider>>,
+    /// Platform-specific chat/conversation ID (e.g., Telegram chat_id)
+    /// Allows tools to query data by chat without going through sessions
+    pub platform_chat_id: Option<String>,
     /// Runtime API key store (interior-mutable so install_api_key can write via &self)
     /// Keys are stored as UPPER_SNAKE_CASE names → values
     pub api_keys: Arc<RwLock<HashMap<String, String>>>,
@@ -396,6 +399,7 @@ impl std::fmt::Debug for ToolContext {
             .field("selected_network", &self.selected_network)
             .field("memory_store", &self.memory_store.is_some())
             .field("wallet_provider", &self.wallet_provider.is_some())
+            .field("platform_chat_id", &self.platform_chat_id)
             .field("api_keys", &self.api_keys.read().ok().map(|m| m.len()))
             .finish()
     }
@@ -423,6 +427,7 @@ impl Default for ToolContext {
             selected_network: None,
             memory_store: None,
             wallet_provider: None,
+            platform_chat_id: None,
             api_keys: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -460,6 +465,11 @@ impl ToolContext {
 
     pub fn with_workspace(mut self, workspace_dir: String) -> Self {
         self.workspace_dir = Some(workspace_dir);
+        self
+    }
+
+    pub fn with_platform_chat_id(mut self, chat_id: String) -> Self {
+        self.platform_chat_id = Some(chat_id);
         self
     }
 

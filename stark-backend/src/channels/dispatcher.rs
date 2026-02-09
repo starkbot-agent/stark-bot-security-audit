@@ -736,6 +736,7 @@ impl MessageDispatcher {
 
         let mut tool_context = ToolContext::new()
             .with_channel(message.channel_id, message.channel_type.clone())
+            .with_platform_chat_id(message.chat_id.clone())
             .with_user(message.user_id.clone())
             .with_session(session.id)
             .with_identity(identity.identity_id.clone())

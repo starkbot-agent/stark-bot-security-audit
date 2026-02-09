@@ -9,16 +9,16 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: rgb(30 41 59); /* slate-800 */
+  background: #1f1f1f; /* slate-800 */
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgb(71 85 105); /* slate-600 */
+  background: #525252; /* slate-600 */
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgb(100 116 139); /* slate-500 */
+  background: #737373; /* slate-500 */
 }
 
 /* Typing indicator animation */
@@ -63,5 +63,5 @@
 
 /* Holographic glow for license card agent ID */
 .license-id-glow {
-  text-shadow: 0 0 20px rgba(99, 102, 241, 0.5), 0 0 40px rgba(59, 130, 246, 0.3);
+  text-shadow: 0 0 20px rgba(249, 115, 22, 0.5), 0 0 40px rgba(251, 146, 60, 0.3);
 }

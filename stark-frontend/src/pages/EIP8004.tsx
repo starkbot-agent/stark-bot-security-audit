@@ -55,14 +55,26 @@ interface IdentityResponse {
 }
 
 interface DiscoveredAgent {
-  agent_id: number;
-  name: string;
-  description: string;
-  owner: string;
-  is_active: boolean;
-  has_x402: boolean;
-  reputation_count?: number;
-  average_score?: number;
+  identifier: {
+    agent_id: number;
+    agent_registry: string;
+  };
+  registration?: {
+    name: string;
+    description: string;
+    image?: string;
+    services: { name: string; endpoint: string; version: string }[];
+    x402Support: boolean;
+    active: boolean;
+  };
+  owner_address: string;
+  wallet_address?: string;
+  reputation?: {
+    count: number;
+    average_score: number;
+  };
+  discovered_at: string;
+  last_updated: string;
 }
 
 interface DiscoveryResponse {
@@ -452,21 +464,21 @@ export default function EIP8004() {
                   {agents
                     .filter(a =>
                       !searchQuery ||
-                      a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                      a.description.toLowerCase().includes(searchQuery.toLowerCase())
+                      (a.registration?.name ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      (a.registration?.description ?? '').toLowerCase().includes(searchQuery.toLowerCase())
                     )
                     .map(agent => {
-                      const trust = getTrustBadge(agent.average_score, agent.reputation_count);
+                      const trust = getTrustBadge(agent.reputation?.average_score, agent.reputation?.count);
                       return (
                         <div
-                          key={agent.agent_id}
+                          key={agent.identifier.agent_id}
                           className="p-4 bg-slate-700/50 rounded-lg hover:bg-slate-700 transition-colors"
                         >
                           <div className="flex items-start justify-between">
                             <div>
                               <div className="flex items-center gap-2">
-                                <h3 className="text-white font-medium">{agent.name}</h3>
-                                {agent.has_x402 && (
+                                <h3 className="text-white font-medium">{agent.registration?.name ?? 'Unknown Agent'}</h3>
+                                {agent.registration?.x402Support && (
                                   <span className="px-2 py-0.5 bg-stark-500/20 text-stark-400 rounded text-xs">
                                     x402
                                   </span>
@@ -475,18 +487,18 @@ export default function EIP8004() {
                                   {trust.label}
                                 </span>
                               </div>
-                              <p className="text-slate-400 text-sm mt-1">{agent.description}</p>
+                              <p className="text-slate-400 text-sm mt-1">{agent.registration?.description}</p>
                               <p className="text-slate-500 text-xs mt-2">
-                                Agent #{agent.agent_id} - Owner: {shortenAddress(agent.owner)}
+                                Agent #{agent.identifier.agent_id}{agent.owner_address ? ` - Owner: ${shortenAddress(agent.owner_address)}` : ''}
                               </p>
                             </div>
                             <div className="text-right">
                               <p className="text-slate-400 text-sm">
-                                {agent.reputation_count ?? 0} reviews
+                                {agent.reputation?.count ?? 0} reviews
                               </p>
-                              {agent.average_score !== undefined && (
+                              {agent.reputation?.average_score != null && (
                                 <p className="text-white font-mono">
-                                  {agent.average_score.toFixed(1)}
+                                  {agent.reputation.average_score.toFixed(1)}
                                 </p>
                               )}
                             </div>

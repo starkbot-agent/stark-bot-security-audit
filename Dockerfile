@@ -58,7 +58,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary
-COPY --from=backend-builder /app/target/release/stark-backend /app/
+COPY --from=backend-builder /app/target/release/stark-backend /app/stark-backend-bin
 
 # Copy the built frontend (dist folder)
 COPY --from=frontend-builder /app/stark-frontend/dist /app/stark-frontend/dist
@@ -83,4 +83,4 @@ EXPOSE 8080
 EXPOSE 8081
 
 # Run the application
-CMD ["/app/stark-backend"]
+CMD ["/app/stark-backend-bin"]

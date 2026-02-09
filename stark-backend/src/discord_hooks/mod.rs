@@ -147,23 +147,29 @@ pub async fn process(
         .map_err(|e| format!("Failed to get current user: {}", e))?;
     let bot_id = current_user.id;
 
-    // Ignore replies - if someone replies to a message containing @bot, that shouldn't count
-    // as the replying user mentioning the bot
-    if msg.message_reference.is_some() {
-        log::debug!("Discord hooks: Ignoring reply from {}", msg.author.name);
-        return Ok(ProcessResult::not_handled());
+    // Check if this is a reply to one of the bot's messages
+    let is_reply_to_bot = msg.message_reference.is_some()
+        && msg
+            .referenced_message
+            .as_ref()
+            .map(|ref_msg| ref_msg.author.id == bot_id)
+            .unwrap_or(false);
+
+    if is_reply_to_bot {
+        log::info!("Discord hooks: Processing reply-to-bot from {}", msg.author.name);
     }
 
     // Debug logging for mention analysis
     log::info!(
-        "Discord hooks: Message from {} - mentions={:?}, content_preview='{}'",
+        "Discord hooks: Message from {} - mentions={:?}, content_preview='{}', reply_to_bot={}",
         msg.author.name,
         msg.mentions.iter().map(|u| format!("{}({})", u.name, u.id)).collect::<Vec<_>>(),
-        if msg.content.len() > 100 { format!("{}...", &msg.content[..100]) } else { msg.content.clone() }
+        if msg.content.len() > 100 { format!("{}...", &msg.content[..100]) } else { msg.content.clone() },
+        is_reply_to_bot
     );
 
-    // Check if bot is mentioned
-    if !is_bot_mentioned(msg, bot_id) {
+    // Check if bot is mentioned OR if user is replying to the bot
+    if !is_reply_to_bot && !is_bot_mentioned(msg, bot_id) {
         // Check if they mentioned a role the bot has (common mistake)
         if !msg.mention_roles.is_empty() {
             if let Some(guild_id) = msg.guild_id {

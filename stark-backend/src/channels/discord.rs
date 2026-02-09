@@ -111,8 +111,10 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
-        // Ignore system messages (joins, pins, boosts, etc.) - only process regular messages
-        if msg.kind != serenity::all::MessageType::Regular {
+        // Ignore system messages (joins, pins, boosts, etc.) - only process regular messages and replies
+        if msg.kind != serenity::all::MessageType::Regular
+            && msg.kind != serenity::all::MessageType::InlineReply
+        {
             log::debug!("Discord: Ignoring non-regular message type {:?} from {}", msg.kind, msg.author.name);
             return;
         }

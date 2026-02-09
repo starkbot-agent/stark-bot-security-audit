@@ -871,6 +871,16 @@ export async function deleteApiKey(keyName: string): Promise<void> {
   });
 }
 
+export async function getApiKeyValue(keyName: string): Promise<string> {
+  const response = await apiFetch<{ success: boolean; key_value?: string; error?: string }>(
+    `/keys/value?key_name=${encodeURIComponent(keyName)}`
+  );
+  if (!response.success || !response.key_value) {
+    throw new Error(response.error || 'Failed to get API key value');
+  }
+  return response.key_value;
+}
+
 // Cloud Backup API
 export interface BackupResponse {
   success: boolean;

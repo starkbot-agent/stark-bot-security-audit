@@ -1,33 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Key, Trash2, Plus, Clock } from 'lucide-react';
+import { Key, Trash2, Plus, Clock, ClipboardCopy, Check } from 'lucide-react';
 import Card, { CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
-import { getApiKeys, upsertApiKey, deleteApiKey, getServiceConfigs, ApiKey, ServiceConfig } from '@/lib/api';
-
-interface FlatKeyOption {
-  keyName: string;
-  label: string;
-  serviceLabel: string;
-  description: string;
-  url: string;
-}
-
-function buildKnownKeyOptions(configs: ServiceConfig[]): FlatKeyOption[] {
-  const options: FlatKeyOption[] = [];
-  for (const config of configs) {
-    for (const key of config.keys) {
-      options.push({
-        keyName: key.name,
-        label: `${key.name} — ${config.label} ${key.label}`,
-        serviceLabel: config.label,
-        description: config.description,
-        url: config.url,
-      });
-    }
-  }
-  return options;
-}
+import { getApiKeys, upsertApiKey, deleteApiKey, getApiKeyValue, getServiceConfigs, ApiKey, ServiceConfig } from '@/lib/api';
 
 function getServiceLabel(keyName: string, configs: ServiceConfig[]): string | null {
   for (const config of configs) {
@@ -55,13 +31,17 @@ export default function ApiKeys() {
 
   // Add form state
   const [showAddForm, setShowAddForm] = useState(false);
-  const [selectedOption, setSelectedOption] = useState(''); // key name or '__custom__'
+  const [selectedGroup, setSelectedGroup] = useState(''); // group name or '__custom__'
   const [customKeyName, setCustomKeyName] = useState('');
-  const [keyValue, setKeyValue] = useState('');
+  const [keyValues, setKeyValues] = useState<Record<string, string>>({});
   const [isSaving, setIsSaving] = useState(false);
 
   // Delete confirmation
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
+
+  // Copy state
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [copyingKey, setCopyingKey] = useState<string | null>(null);
 
   useEffect(() => {
     loadData();
@@ -91,35 +71,56 @@ export default function ApiKeys() {
     }
   };
 
-  const knownOptions = buildKnownKeyOptions(serviceConfigs);
-  const selectedKnown = knownOptions.find(o => o.keyName === selectedOption);
-  const isCustom = selectedOption === '__custom__';
-
-  const resolvedKeyName = isCustom ? customKeyName.trim().toUpperCase() : selectedOption;
+  const isCustom = selectedGroup === '__custom__';
+  const selectedService = serviceConfigs.find(c => c.group === selectedGroup);
 
   const resetForm = () => {
     setShowAddForm(false);
-    setSelectedOption('');
+    setSelectedGroup('');
     setCustomKeyName('');
-    setKeyValue('');
+    setKeyValues({});
   };
 
   const handleSave = async () => {
-    if (!resolvedKeyName) {
-      setMessage({ type: 'error', text: 'Please select or enter a key name' });
-      return;
-    }
-    if (!keyValue.trim()) {
-      setMessage({ type: 'error', text: 'Please enter a key value' });
-      return;
-    }
-
     setIsSaving(true);
     setMessage(null);
 
     try {
-      await upsertApiKey(resolvedKeyName, keyValue.trim());
-      setMessage({ type: 'success', text: `${resolvedKeyName} saved successfully` });
+      if (isCustom) {
+        const name = customKeyName.trim().toUpperCase();
+        const value = keyValues['__custom__']?.trim();
+        if (!name) {
+          setMessage({ type: 'error', text: 'Please enter a key name' });
+          setIsSaving(false);
+          return;
+        }
+        if (!value) {
+          setMessage({ type: 'error', text: 'Please enter a key value' });
+          setIsSaving(false);
+          return;
+        }
+        await upsertApiKey(name, value);
+        setMessage({ type: 'success', text: `${name} saved successfully` });
+      } else if (selectedService) {
+        // Validate all fields have values
+        const emptyKeys = selectedService.keys.filter(k => !keyValues[k.name]?.trim());
+        if (emptyKeys.length === selectedService.keys.length) {
+          setMessage({ type: 'error', text: 'Please enter at least one key value' });
+          setIsSaving(false);
+          return;
+        }
+
+        // Save all non-empty keys
+        let savedCount = 0;
+        for (const keyConfig of selectedService.keys) {
+          const value = keyValues[keyConfig.name]?.trim();
+          if (value) {
+            await upsertApiKey(keyConfig.name, value);
+            savedCount++;
+          }
+        }
+        setMessage({ type: 'success', text: `Saved ${savedCount} ${selectedService.label} key${savedCount !== 1 ? 's' : ''}` });
+      }
       resetForm();
       await loadKeys();
     } catch (err) {
@@ -144,6 +145,31 @@ export default function ApiKeys() {
       setDeletingKey(null);
     }
   };
+
+  const handleCopy = async (keyName: string) => {
+    setCopyingKey(keyName);
+    try {
+      const value = await getApiKeyValue(keyName);
+      await navigator.clipboard.writeText(value);
+      setCopiedKey(keyName);
+      setTimeout(() => setCopiedKey(null), 2000);
+    } catch {
+      setMessage({ type: 'error', text: `Failed to copy ${keyName}` });
+    } finally {
+      setCopyingKey(null);
+    }
+  };
+
+  // Check if save button should be enabled
+  const canSave = (() => {
+    if (isCustom) {
+      return customKeyName.trim() !== '' && !!keyValues['__custom__']?.trim();
+    }
+    if (selectedService) {
+      return selectedService.keys.some(k => !!keyValues[k.name]?.trim());
+    }
+    return false;
+  })();
 
   if (isLoading) {
     return (
@@ -196,23 +222,24 @@ export default function ApiKeys() {
             </CardHeader>
             <CardContent>
               <div className="space-y-4 max-w-lg">
-                {/* Service / key selector */}
+                {/* Service group selector */}
                 <div>
                   <label className="block text-sm font-medium text-slate-300 mb-1">
                     Service
                   </label>
                   <select
-                    value={selectedOption}
+                    value={selectedGroup}
                     onChange={(e) => {
-                      setSelectedOption(e.target.value);
+                      setSelectedGroup(e.target.value);
                       setCustomKeyName('');
+                      setKeyValues({});
                     }}
                     className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-stark-500 focus:border-transparent"
                   >
                     <option value="">Select a service...</option>
-                    {knownOptions.map((opt) => (
-                      <option key={opt.keyName} value={opt.keyName}>
-                        {opt.label}
+                    {serviceConfigs.map((config) => (
+                      <option key={config.group} value={config.group}>
+                        {config.label}
                       </option>
                     ))}
                     <option value="__custom__">Custom...</option>
@@ -237,51 +264,68 @@ export default function ApiKeys() {
                   </div>
                 )}
 
-                {/* Description for known services */}
-                {selectedKnown && (
+                {/* Service description */}
+                {selectedService && (
                   <div className="text-sm text-slate-400 bg-slate-800/50 rounded-lg p-3">
-                    <p>{selectedKnown.description}</p>
-                    {selectedKnown.url && (
+                    <p>{selectedService.description}</p>
+                    {selectedService.url && (
                       <a
-                        href={selectedKnown.url}
+                        href={selectedService.url}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-stark-400 hover:text-stark-300 mt-1 inline-block"
                       >
-                        Get key &rarr;
+                        Get keys &rarr;
                       </a>
                     )}
                   </div>
                 )}
 
-                {/* Key value input */}
-                {(selectedOption !== '') && (
+                {/* Key value inputs for selected service group */}
+                {selectedService && selectedService.keys.map((keyConfig) => (
+                  <div key={keyConfig.name}>
+                    <label className="block text-sm font-medium text-slate-300 mb-1">
+                      {keyConfig.label}
+                    </label>
+                    <Input
+                      type="password"
+                      value={keyValues[keyConfig.name] || ''}
+                      onChange={(e) => setKeyValues(prev => ({ ...prev, [keyConfig.name]: e.target.value }))}
+                      placeholder={keyConfig.name}
+                    />
+                  </div>
+                ))}
+
+                {/* Custom key value input */}
+                {isCustom && (
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1">
                       Key Value
                     </label>
                     <Input
                       type="password"
-                      value={keyValue}
-                      onChange={(e) => setKeyValue(e.target.value)}
+                      value={keyValues['__custom__'] || ''}
+                      onChange={(e) => setKeyValues(prev => ({ ...prev, '__custom__': e.target.value }))}
                       placeholder="Enter key value"
                     />
                   </div>
                 )}
 
                 {/* Actions */}
-                <div className="flex gap-3 pt-2">
-                  <Button
-                    onClick={handleSave}
-                    isLoading={isSaving}
-                    disabled={!resolvedKeyName || !keyValue.trim()}
-                  >
-                    Save
-                  </Button>
-                  <Button variant="secondary" onClick={resetForm}>
-                    Cancel
-                  </Button>
-                </div>
+                {selectedGroup !== '' && (
+                  <div className="flex gap-3 pt-2">
+                    <Button
+                      onClick={handleSave}
+                      isLoading={isSaving}
+                      disabled={!canSave}
+                    >
+                      Save
+                    </Button>
+                    <Button variant="secondary" onClick={resetForm}>
+                      Cancel
+                    </Button>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -305,6 +349,8 @@ export default function ApiKeys() {
               {keys.map((key) => {
                 const serviceLabel = getServiceLabel(key.key_name, serviceConfigs);
                 const isDeleting = deletingKey === key.key_name;
+                const isCopying = copyingKey === key.key_name;
+                const isCopied = copiedKey === key.key_name;
 
                 return (
                   <div
@@ -334,22 +380,38 @@ export default function ApiKeys() {
                         </div>
                       </div>
                     </div>
-                    <button
-                      onClick={() => {
-                        if (confirm(`Delete ${key.key_name}?`)) {
-                          handleDelete(key.key_name);
-                        }
-                      }}
-                      disabled={isDeleting}
-                      className="text-slate-500 hover:text-red-400 p-2 rounded transition-colors disabled:opacity-50"
-                      title="Delete key"
-                    >
-                      {isDeleting ? (
-                        <div className="w-4 h-4 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
-                      ) : (
-                        <Trash2 className="w-4 h-4" />
-                      )}
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleCopy(key.key_name)}
+                        disabled={isCopying}
+                        className="text-slate-500 hover:text-slate-300 p-2 rounded transition-colors disabled:opacity-50"
+                        title={isCopied ? 'Copied!' : 'Copy key value'}
+                      >
+                        {isCopying ? (
+                          <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                        ) : isCopied ? (
+                          <Check className="w-4 h-4 text-green-400" />
+                        ) : (
+                          <ClipboardCopy className="w-4 h-4" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Delete ${key.key_name}?`)) {
+                            handleDelete(key.key_name);
+                          }
+                        }}
+                        disabled={isDeleting}
+                        className="text-slate-500 hover:text-red-400 p-2 rounded transition-colors disabled:opacity-50"
+                        title="Delete key"
+                      >
+                        {isDeleting ? (
+                          <div className="w-4 h-4 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
                   </div>
                 );
               })}

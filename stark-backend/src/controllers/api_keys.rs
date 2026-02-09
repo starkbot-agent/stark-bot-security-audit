@@ -255,6 +255,22 @@ pub fn get_key_config(key_name: &str) -> Option<(&'static str, KeyConfig)> {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GetApiKeyValueQuery {
+    pub key_name: String,
+}
+
+#[derive(Serialize)]
+pub struct GetApiKeyValueResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct UpsertApiKeyRequest {
     pub key_name: String,
     pub api_key: String,
@@ -418,6 +434,7 @@ pub fn config(cfg: &mut web::ServiceConfig) {
             .route("", web::post().to(upsert_api_key))
             .route("", web::delete().to(delete_api_key))
             .route("/config", web::get().to(get_configs))
+            .route("/value", web::get().to(get_api_key_value))
             .route("/cloud_backup", web::post().to(backup_to_cloud))
             .route("/cloud_restore", web::post().to(restore_from_cloud))
             .route("/cloud_preview", web::get().to(preview_cloud_keys)),
@@ -470,6 +487,40 @@ fn validate_session_from_request(
                 keys: None,
                 error: Some("Internal server error".to_string()),
             }))
+        }
+    }
+}
+
+async fn get_api_key_value(
+    state: web::Data<AppState>,
+    req: HttpRequest,
+    query: web::Query<GetApiKeyValueQuery>,
+) -> impl Responder {
+    if let Err(resp) = validate_session_from_request(&state, &req) {
+        return resp;
+    }
+
+    match state.db.get_api_key(&query.key_name) {
+        Ok(Some(key)) => HttpResponse::Ok().json(GetApiKeyValueResponse {
+            success: true,
+            key_name: Some(key.service_name),
+            key_value: Some(key.api_key),
+            error: None,
+        }),
+        Ok(None) => HttpResponse::NotFound().json(GetApiKeyValueResponse {
+            success: false,
+            key_name: None,
+            key_value: None,
+            error: Some("API key not found".to_string()),
+        }),
+        Err(e) => {
+            log::error!("Failed to get API key value: {}", e);
+            HttpResponse::InternalServerError().json(GetApiKeyValueResponse {
+                success: false,
+                key_name: None,
+                key_value: None,
+                error: Some("Failed to retrieve API key".to_string()),
+            })
         }
     }
 }

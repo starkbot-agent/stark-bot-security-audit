@@ -264,24 +264,42 @@ pub fn scan_input(text: &str) -> Vec<ContextBankItem> {
         }
     }
 
-    // Scan for numeric values (integers, decimals, with optional commas)
-    // Matches: 1, 100, 1000, 1,000, 100000, 2500000, 0.5, 1.25, etc.
+    // Scan for numeric values (integers, decimals, with optional commas and suffixes like k/m/b)
+    // Matches: 1, 100, 1000, 1,000, 10k, 1.5m, 10billion, etc.
     // Excludes numbers that are part of hex addresses (handled above)
-    let number_regex = Regex::new(r"\b(\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?\b").unwrap();
-    for cap in number_regex.find_iter(text) {
-        let num_str = cap.as_str();
-        // Skip if this looks like it's part of a hex address (we already captured those)
-        // Also skip very short numbers (single digit) that are likely noise
-        let clean_num = num_str.replace(',', "");
-        if let Ok(num) = clean_num.parse::<f64>() {
-            // Only capture numbers >= 1 to avoid noise from small fragments
-            if num >= 1.0 {
-                items.push(ContextBankItem {
-                    value: clean_num,
-                    item_type: "number".to_string(),
-                    label: None,
-                });
-            }
+    let number_regex = Regex::new(r"(?i)\b(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d+))?(k|m|b|mil|million|billion|bil|thousand)?\b").unwrap();
+    for cap in number_regex.captures_iter(text) {
+        let whole_part = cap[1].replace(',', "");
+        let decimal_part = cap.get(2).map(|m| m.as_str());
+        let suffix = cap.get(3).map(|m| m.as_str().to_lowercase());
+
+        let base_num: f64 = if let Some(dec) = decimal_part {
+            format!("{}.{}", whole_part, dec).parse().unwrap_or(0.0)
+        } else {
+            whole_part.parse().unwrap_or(0.0)
+        };
+
+        let multiplier: f64 = match suffix.as_deref() {
+            Some("k" | "thousand") => 1_000.0,
+            Some("m" | "mil" | "million") => 1_000_000.0,
+            Some("b" | "bil" | "billion") => 1_000_000_000.0,
+            _ => 1.0,
+        };
+
+        let expanded = base_num * multiplier;
+
+        // Only capture numbers >= 1 to avoid noise from small fragments
+        if expanded >= 1.0 {
+            let value = if expanded.fract() == 0.0 {
+                format!("{}", expanded as u64)
+            } else {
+                format!("{}", expanded)
+            };
+            items.push(ContextBankItem {
+                value,
+                item_type: "number".to_string(),
+                label: None,
+            });
         }
     }
 
@@ -384,6 +402,46 @@ mod tests {
         let urls: Vec<_> = items.iter().filter(|i| i.item_type == "url").collect();
         assert_eq!(urls.len(), 1);
         assert!(urls[0].value.contains("example.com"));
+    }
+
+    #[test]
+    fn test_scan_number_suffix_k() {
+        let text = "send 10k starkbot";
+        let items = scan_input(text);
+        let numbers: Vec<_> = items.iter().filter(|i| i.item_type == "number").collect();
+        assert!(numbers.iter().any(|n| n.value == "10000"), "Expected 10000, got: {:?}", numbers);
+    }
+
+    #[test]
+    fn test_scan_number_suffix_m() {
+        let text = "send 10m starkbot";
+        let items = scan_input(text);
+        let numbers: Vec<_> = items.iter().filter(|i| i.item_type == "number").collect();
+        assert!(numbers.iter().any(|n| n.value == "10000000"), "Expected 10000000, got: {:?}", numbers);
+    }
+
+    #[test]
+    fn test_scan_number_no_suffix() {
+        let text = "send 10 starkbot";
+        let items = scan_input(text);
+        let numbers: Vec<_> = items.iter().filter(|i| i.item_type == "number").collect();
+        assert!(numbers.iter().any(|n| n.value == "10"), "Expected 10, got: {:?}", numbers);
+    }
+
+    #[test]
+    fn test_scan_number_suffix_decimal_k() {
+        let text = "send 1.5k tokens";
+        let items = scan_input(text);
+        let numbers: Vec<_> = items.iter().filter(|i| i.item_type == "number").collect();
+        assert!(numbers.iter().any(|n| n.value == "1500"), "Expected 1500, got: {:?}", numbers);
+    }
+
+    #[test]
+    fn test_scan_number_suffix_b() {
+        let text = "send 10b tokens";
+        let items = scan_input(text);
+        let numbers: Vec<_> = items.iter().filter(|i| i.item_type == "number").collect();
+        assert!(numbers.iter().any(|n| n.value == "10000000000"), "Expected 10000000000, got: {:?}", numbers);
     }
 
     #[test]

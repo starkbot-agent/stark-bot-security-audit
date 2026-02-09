@@ -164,7 +164,7 @@ impl EventHandler for DiscordHandler {
                     );
 
                     let text_with_hint = format!(
-                        "[DISCORD MESSAGE - Use discord skill for tipping/messaging.]\n\n{}",
+                        "[DISCORD MESSAGE - Use discord_tipping skill for tips, discord skill for messaging.]\n\n{}",
                         forward.text
                     );
 

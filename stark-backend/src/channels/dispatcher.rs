@@ -919,11 +919,9 @@ impl MessageDispatcher {
                 let response_tokens = estimate_tokens(&response);
 
                 // Store AI response in session with token count
-                // Skip empty responses — say_to_user already stored its content as an
-                // Assistant message during the tool loop, so an empty final response
-                // would just create a useless entry that gets filtered during context build.
+                // Skip storing empty responses (nothing useful to persist)
                 if response.trim().is_empty() {
-                    log::info!("[DISPATCH] Skipping empty assistant response (say_to_user already stored)");
+                    log::info!("[DISPATCH] Skipping empty assistant response");
                 } else if let Err(e) = self.db.add_session_message(
                     session.id,
                     DbMessageRole::Assistant,
@@ -1643,61 +1641,80 @@ impl MessageDispatcher {
         ));
 
         let result = if tool_name == "use_skill" {
-            // Execute skill and set active skill on orchestrator
-            let skill_result = self.execute_skill_tool(tool_arguments, Some(session_id)).await;
+            // Check if the same skill is already active — avoid redundant reloads
+            let requested_skill = tool_arguments.get("skill_name").and_then(|v| v.as_str()).unwrap_or("");
+            let already_active = orchestrator.context().active_skill
+                .as_ref()
+                .map(|s| s.name == requested_skill)
+                .unwrap_or(false);
 
-            // Also set active skill directly on orchestrator (in-memory)
-            if skill_result.success {
-                if let Some(skill_name_val) = tool_arguments.get("skill_name").and_then(|v| v.as_str()) {
-                    if let Ok(Some(skill)) = self.db.get_enabled_skill_by_name(skill_name_val) {
-                        let skills_dir = crate::config::skills_dir();
-                        let skill_base_dir = format!("{}/{}", skills_dir, skill.name);
-                        let instructions = skill.body.replace("{baseDir}", &skill_base_dir);
+            if already_active {
+                let input = tool_arguments.get("input").and_then(|v| v.as_str()).unwrap_or("");
+                log::info!(
+                    "[SKILL] Skill '{}' already active, skipping redundant reload",
+                    requested_skill
+                );
+                crate::tools::ToolResult::success(&format!(
+                    "Skill '{}' is already loaded. Follow the instructions already provided and call the actual tools directly. Do NOT call use_skill again.\n\nUser query: {}",
+                    requested_skill, input
+                ))
+            } else {
+                // Execute skill and set active skill on orchestrator
+                let skill_result = self.execute_skill_tool(tool_arguments, Some(session_id)).await;
 
-                        let requires_tools = skill.requires_tools.clone();
-                        log::info!(
-                            "[SKILL] Activating skill '{}' with requires_tools: {:?}",
-                            skill.name,
-                            requires_tools
-                        );
+                // Also set active skill directly on orchestrator (in-memory)
+                if skill_result.success {
+                    if let Some(skill_name_val) = tool_arguments.get("skill_name").and_then(|v| v.as_str()) {
+                        if let Ok(Some(skill)) = self.db.get_enabled_skill_by_name(skill_name_val) {
+                            let skills_dir = crate::config::skills_dir();
+                            let skill_base_dir = format!("{}/{}", skills_dir, skill.name);
+                            let instructions = skill.body.replace("{baseDir}", &skill_base_dir);
 
-                        // Auto-set subtype if skill specifies one (before tool refresh)
-                        self.apply_skill_subtype(&skill, orchestrator, original_message.channel_id);
-
-                        orchestrator.context_mut().active_skill = Some(crate::ai::multi_agent::types::ActiveSkill {
-                            name: skill.name,
-                            instructions,
-                            activated_at: chrono::Utc::now().to_rfc3339(),
-                            tool_calls_made: 0,
-                            requires_tools: requires_tools.clone(),
-                        });
-
-                        // Force-include required tools in the toolset
-                        if !requires_tools.is_empty() {
-                            let subtype = orchestrator.current_subtype();
-                            *tools = self.tool_registry
-                                .get_tool_definitions_for_subtype_with_required(
-                                    tool_config,
-                                    subtype,
-                                    &requires_tools,
-                                );
-                            if let Some(skill_tool) = self.create_skill_tool_definition_for_subtype(subtype) {
-                                tools.push(skill_tool);
-                            }
-                            tools.extend(orchestrator.get_mode_tools());
-                            if !requires_tools.iter().any(|t| t == "define_tasks") {
-                                tools.retain(|t| t.name != "define_tasks");
-                            }
+                            let requires_tools = skill.requires_tools.clone();
                             log::info!(
-                                "[SKILL] Refreshed toolset with {} tools (including {} required by skill)",
-                                tools.len(),
-                                requires_tools.len()
+                                "[SKILL] Activating skill '{}' with requires_tools: {:?}",
+                                skill.name,
+                                requires_tools
                             );
+
+                            // Auto-set subtype if skill specifies one (before tool refresh)
+                            self.apply_skill_subtype(&skill, orchestrator, original_message.channel_id);
+
+                            orchestrator.context_mut().active_skill = Some(crate::ai::multi_agent::types::ActiveSkill {
+                                name: skill.name,
+                                instructions,
+                                activated_at: chrono::Utc::now().to_rfc3339(),
+                                tool_calls_made: 0,
+                                requires_tools: requires_tools.clone(),
+                            });
+
+                            // Force-include required tools in the toolset
+                            if !requires_tools.is_empty() {
+                                let subtype = orchestrator.current_subtype();
+                                *tools = self.tool_registry
+                                    .get_tool_definitions_for_subtype_with_required(
+                                        tool_config,
+                                        subtype,
+                                        &requires_tools,
+                                    );
+                                if let Some(skill_tool) = self.create_skill_tool_definition_for_subtype(subtype) {
+                                    tools.push(skill_tool);
+                                }
+                                tools.extend(orchestrator.get_mode_tools());
+                                if !requires_tools.iter().any(|t| t == "define_tasks") {
+                                    tools.retain(|t| t.name != "define_tasks");
+                                }
+                                log::info!(
+                                    "[SKILL] Refreshed toolset with {} tools (including {} required by skill)",
+                                    tools.len(),
+                                    requires_tools.len()
+                                );
+                            }
                         }
                     }
                 }
+                skill_result
             }
-            skill_result
         } else {
             // Check if subtype is None - allow System tools but block non-System tools
             let current_subtype = orchestrator.current_subtype();
@@ -1900,11 +1917,6 @@ impl MessageDispatcher {
 
                 log::info!("[ORCHESTRATED_LOOP] task_fully_completed called");
 
-                // Capture summary for session memory if say_to_user wasn't called
-                if last_say_to_user_content.is_empty() {
-                    *last_say_to_user_content = summary.clone();
-                }
-
                 // Mark current task as completed and broadcast
                 if let Some(completed_task_id) = orchestrator.complete_current_task() {
                     log::info!("[ORCHESTRATED_LOOP] Task {} completed", completed_task_id);
@@ -1948,24 +1960,8 @@ impl MessageDispatcher {
             } else {
                 *last_say_to_user_content = result.content.clone();
                 batch_state.had_say_to_user = true;
-
-                // Also store as an Assistant message so the content survives in conversation
-                // context for follow-up queries. ToolResult messages are filtered out when
-                // building AI context, so without this the AI loses all knowledge of what
-                // it communicated to the user in previous turns.
-                if let Err(e) = self.db.add_session_message(
-                    session_id,
-                    DbMessageRole::Assistant,
-                    &result.content,
-                    None,
-                    None,
-                    None,
-                    Some(estimate_tokens(&result.content)),
-                ) {
-                    log::error!("[ORCHESTRATED_LOOP] Failed to store say_to_user as assistant message: {}", e);
-                } else {
-                    self.context_manager.update_context_tokens(session_id, estimate_tokens(&result.content));
-                }
+                // Content will be returned as the final result by finalize_tool_loop
+                // and stored as assistant message by dispatch() — no need to store here.
             }
         }
 
@@ -2081,8 +2077,10 @@ impl MessageDispatcher {
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
 
-        // Skip broadcasting duplicate say_to_user events — the first one in the batch
-        // already delivered the message to the user via Discord/Telegram/WebSocket.
+        // Broadcast tool result event. say_to_user events are still broadcast for
+        // channels that capture them (e.g. Twitter). Minimal-style channels (Discord,
+        // Telegram, AgentChat) skip say_to_user in their event handlers and instead
+        // receive the content via the final result.response.
         if !is_duplicate_say_to_user {
             self.broadcaster.broadcast(GatewayEvent::tool_result(
                 original_message.channel_id,
@@ -2191,9 +2189,15 @@ impl MessageDispatcher {
             if memory_suppressed {
                 log::info!("[ORCHESTRATED_LOOP] Skipping session memory — memory-excluded tool was called");
             } else {
+                // Prefer say_to_user content for memory, fall back to task_fully_completed summary
+                let memory_content = if !last_say_to_user_content.is_empty() {
+                    last_say_to_user_content
+                } else {
+                    final_summary
+                };
                 self.save_session_completion_memory(
                     &original_message.text,
-                    last_say_to_user_content,
+                    memory_content,
                     is_safe_mode,
                 );
             }
@@ -2233,13 +2237,13 @@ impl MessageDispatcher {
                 }
             }
             Ok(user_question_content.to_string())
+        } else if !last_say_to_user_content.is_empty() {
+            // say_to_user content IS the final result — return it directly.
+            // dispatch() will store it as assistant message and send to channel.
+            log::info!("[ORCHESTRATED_LOOP] Returning say_to_user content as final result ({} chars)", last_say_to_user_content.len());
+            Ok(last_say_to_user_content.to_string())
         } else if orchestrator_complete {
-            if !last_say_to_user_content.is_empty() {
-                log::info!("[ORCHESTRATED_LOOP] say_to_user already delivered response, suppressing final_summary");
-                Ok(String::new())
-            } else {
-                Ok(final_summary.to_string())
-            }
+            Ok(final_summary.to_string())
         } else if tool_call_log.is_empty() {
             Err(format!(
                 "Tool loop hit max iterations ({}) without completion",
@@ -2747,17 +2751,15 @@ impl MessageDispatcher {
                     continue;
                 }
 
+                // say_to_user content takes priority — it IS the final result
+                if !last_say_to_user_content.is_empty() {
+                    log::info!("[ORCHESTRATED_LOOP] Returning say_to_user content as final result ({} chars)", last_say_to_user_content.len());
+                    return Ok(last_say_to_user_content.clone());
+                }
+
                 if orchestrator_complete {
-                    // If say_to_user already delivered the response, return empty to avoid duplication
-                    if !last_say_to_user_content.is_empty() {
-                        log::info!("[ORCHESTRATED_LOOP] say_to_user already delivered response, suppressing final text output");
-                        return Ok(String::new());
-                    }
-                    // Build response from non-empty parts to avoid duplicate output
+                    // Build response from non-empty parts
                     let mut parts: Vec<&str> = Vec::new();
-                    if !tool_call_log.is_empty() {
-                        // tool_call_log is joined below
-                    }
                     let tool_log_text = tool_call_log.join("\n");
                     if !tool_log_text.is_empty() { parts.push(&tool_log_text); }
                     if !final_summary.is_empty() { parts.push(&final_summary); }
@@ -2766,11 +2768,6 @@ impl MessageDispatcher {
                     return Ok(response);
                 } else {
                     // No tool calls but not complete
-                    // Safety net: if say_to_user already delivered via events, suppress final text
-                    if !last_say_to_user_content.is_empty() {
-                        log::info!("[ORCHESTRATED_LOOP] say_to_user already delivered response (not orchestrator_complete), suppressing final text output");
-                        return Ok(String::new());
-                    }
                     if tool_call_log.is_empty() {
                         return Ok(ai_response.content);
                     } else {

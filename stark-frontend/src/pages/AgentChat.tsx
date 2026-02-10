@@ -327,18 +327,8 @@ export default function AgentChat() {
       console.log('[AgentChat] Received tool.result event:', data);
       const event = data as { tool_name: string; success: boolean; duration_ms: number; content: string };
 
-      // Special handling for say_to_user - render as assistant message bubble
-      if (event.tool_name === 'say_to_user' && event.success && event.content) {
-        const message: ChatMessageType = {
-          id: crypto.randomUUID(),
-          role: 'assistant' as MessageRole,
-          content: event.content,
-          timestamp: new Date(),
-          sessionId,
-        };
-        setMessages((prev) => [...prev, message]);
-        return;
-      }
+      // Skip say_to_user in event stream — content comes through the API response
+      if (event.tool_name === 'say_to_user') return;
 
       const statusEmoji = event.success ? '✅' : '❌';
       const statusText = event.success ? 'Success' : 'Failed';

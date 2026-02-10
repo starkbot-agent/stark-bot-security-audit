@@ -8,7 +8,8 @@ use crate::gateway::events::EventBroadcaster;
 use crate::gateway::protocol::GatewayEvent;
 use crate::models::{Channel, ToolOutputVerbosity};
 use serenity::all::{
-    Client, Context, EditMessage, EventHandler, GatewayIntents, Message, MessageId, Ready,
+    Client, Context, EditMessage, EventHandler, GatewayIntents, GetMessages, Message, MessageId,
+    Ready,
 };
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -48,15 +49,10 @@ fn format_tool_result_for_discord(
     match verbosity {
         ToolOutputVerbosity::None => None,
         ToolOutputVerbosity::Minimal | ToolOutputVerbosity::MinimalThrottled => {
-            // say_to_user should always show content since that's its whole purpose
-            if tool_name == "say_to_user" {
-                Some(format!("{} {}", status, content))
-            } else {
-                Some(format!(
-                    "{} **Result:** `{}` ({} ms)",
-                    status, tool_name, duration_ms
-                ))
-            }
+            Some(format!(
+                "{} **Result:** `{}` ({} ms)",
+                status, tool_name, duration_ms
+            ))
         }
         ToolOutputVerbosity::Full => {
             // Truncate content if too long
@@ -163,10 +159,67 @@ impl EventHandler for DiscordHandler {
                         if forward.text.len() > 50 { format!("{}...", forward.text.chars().take(50).collect::<String>()) } else { forward.text.clone() }
                     );
 
-                    let text_with_hint = format!(
-                        "[DISCORD MESSAGE - Use discord_tipping skill for tips, discord skill for messaging.]\n\n{}",
-                        forward.text
-                    );
+                    // Fetch recent channel context (last 6 messages before this one)
+                    let recent_context = {
+                        let mut ctx_str = String::new();
+
+                        // If this is a reply, include what it's replying to
+                        if let Some(ref replied) = msg.referenced_message {
+                            let reply_author = &replied.author.name;
+                            let reply_content = if replied.content.len() > 300 {
+                                format!("{}...", &replied.content[..300])
+                            } else {
+                                replied.content.clone()
+                            };
+                            ctx_str.push_str(&format!(
+                                "[REPLYING TO @{}:]\n{}\n\n",
+                                reply_author, reply_content
+                            ));
+                        }
+
+                        // Fetch last 6 messages from channel
+                        match msg
+                            .channel_id
+                            .messages(&ctx.http, GetMessages::new().before(msg.id).limit(6))
+                            .await
+                        {
+                            Ok(messages) if !messages.is_empty() => {
+                                ctx_str.push_str("[RECENT CHAT CONTEXT - recent messages in this Discord channel:]\n");
+                                // messages come newest-first, reverse for chronological order
+                                let mut msgs: Vec<_> = messages.iter().collect();
+                                msgs.reverse();
+                                for m in msgs {
+                                    let who = &m.author.name;
+                                    let tag = if m.author.bot { " [you]" } else { "" };
+                                    let preview = if m.content.len() > 300 {
+                                        format!("{}...", &m.content[..300])
+                                    } else {
+                                        m.content.clone()
+                                    };
+                                    ctx_str.push_str(&format!("@{}{}: {}\n", who, tag, preview));
+                                }
+                                ctx_str.push('\n');
+                            }
+                            Ok(_) => {} // no messages
+                            Err(e) => {
+                                log::warn!("Discord: Failed to fetch channel history: {}", e);
+                            }
+                        }
+
+                        ctx_str
+                    };
+
+                    let text_with_hint = if recent_context.is_empty() {
+                        format!(
+                            "[DISCORD MESSAGE - Use discord_tipping skill for tips.]\n\n{}",
+                            forward.text
+                        )
+                    } else {
+                        format!(
+                            "[DISCORD MESSAGE - Use discord_tipping skill for tips.]\n\n{}[MESSAGE DIRECTED TO YOU:]\n{}",
+                            recent_context, forward.text
+                        )
+                    };
 
                     let normalized = NormalizedMessage {
                         channel_id: self.channel_id,
@@ -273,30 +326,8 @@ impl DiscordHandler {
                         let content = event.data.get("content")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        // For tools that terminate the loop, skip output here (final response handles it)
-                        // For tools that don't terminate, output directly if they have user-facing content
+                        // Skip say_to_user in event stream — content comes through result.response
                         if tool_name == "say_to_user" {
-                            if success && !content.is_empty() {
-                                // Always send say_to_user messages directly — the final response no longer carries them
-                                let say_text = content.to_string();
-                                if say_text.len() <= 2000 {
-                                    if let Err(e) = discord_channel_id.say(&http, &say_text).await {
-                                        log::error!("Discord: Failed to send say_to_user message: {}", e);
-                                    }
-                                } else {
-                                    // Simple split for long messages
-                                    let mut remaining = say_text.as_str();
-                                    while !remaining.is_empty() {
-                                        let chunk_len = remaining.len().min(2000);
-                                        let chunk = &remaining[..chunk_len];
-                                        if let Err(e) = discord_channel_id.say(&http, chunk).await {
-                                            log::error!("Discord: Failed to send say_to_user chunk: {}", e);
-                                        }
-                                        remaining = &remaining[chunk_len..];
-                                    }
-                                }
-                            }
-                            // Don't add to status message (either final response has it, or we just sent it)
                             None
                         } else {
                             format_tool_result_for_discord(tool_name, success, duration_ms, content, verbosity)
@@ -451,8 +482,7 @@ impl DiscordHandler {
             let error_msg = format!("Sorry, I encountered an error: {}", error);
             let _ = msg.channel_id.say(&ctx.http, &error_msg).await;
         } else if result.response.is_empty() {
-            // Empty response with no error — say_to_user already delivered the message via events
-            log::debug!("Discord: Empty final response (say_to_user likely already delivered via events) for user {}", user_name);
+            log::debug!("Discord: Empty final response for user {}", user_name);
         }
     }
 }

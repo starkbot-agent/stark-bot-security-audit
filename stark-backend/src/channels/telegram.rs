@@ -48,14 +48,10 @@ fn format_tool_result_for_telegram(
     match verbosity {
         ToolOutputVerbosity::None => None,
         ToolOutputVerbosity::Minimal | ToolOutputVerbosity::MinimalThrottled => {
-            if tool_name == "say_to_user" {
-                Some(format!("{} {}", status, content))
-            } else {
-                Some(format!(
-                    "{} Result: {} ({} ms)",
-                    status, tool_name, duration_ms
-                ))
-            }
+            Some(format!(
+                "{} Result: {} ({} ms)",
+                status, tool_name, duration_ms
+            ))
         }
         ToolOutputVerbosity::Full => {
             let content_display = if content.len() > 1000 {
@@ -530,44 +526,8 @@ pub async fn start_telegram_listener(
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
 
-                                    // say_to_user: send as NEW message directly (not status edit)
-                                    // This is the critical user-facing message — retry on rate limit
+                                    // Skip say_to_user in event stream — content comes through result.response
                                     if tool_name == "say_to_user" {
-                                        if success && !content.is_empty() {
-                                            let chunks = util::split_message(content, 4096);
-                                            for chunk in &chunks {
-                                                // Try up to 3 times with rate-limit backoff
-                                                let mut attempts = 0;
-                                                loop {
-                                                    attempts += 1;
-                                                    match bot_for_events
-                                                        .send_message(telegram_chat_id, chunk)
-                                                        .await
-                                                    {
-                                                        Ok(_) => break,
-                                                        Err(e) => {
-                                                            let err_str = e.to_string();
-                                                            if let Some(secs) = util::parse_retry_after(&err_str) {
-                                                                if attempts < 3 {
-                                                                    log::warn!(
-                                                                        "Telegram: say_to_user rate-limited, retrying after {}s (attempt {})",
-                                                                        secs, attempts
-                                                                    );
-                                                                    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-                                                                    continue;
-                                                                }
-                                                            }
-                                                            log::error!(
-                                                                "Telegram: Failed to send say_to_user message (attempt {}): {}",
-                                                                attempts, e
-                                                            );
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        // Don't add to status message
                                         None
                                     } else {
                                         format_tool_result_for_telegram(
@@ -750,11 +710,7 @@ pub async fn start_telegram_listener(
                             .reply_to_message_id(msg.id)
                             .await;
                     } else if result.response.is_empty() {
-                        // Empty response — say_to_user already delivered via events
-                        log::debug!(
-                            "Telegram: Empty final response (say_to_user likely already delivered via events) for user {}",
-                            user_name
-                        );
+                        log::debug!("Telegram: Empty final response for user {}", user_name);
                     }
                 }
 

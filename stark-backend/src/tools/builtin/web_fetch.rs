@@ -345,9 +345,19 @@ impl Tool for WebFetchTool {
                     body.clone()
                 };
 
-                request = request
-                    .header("Content-Type", "application/json")
-                    .json(&effective_body);
+                // Serialize body manually and use .body() instead of .json()
+                // to avoid duplicate Content-Type headers (.json() auto-adds one,
+                // which can conflict with custom headers and cause API rejections)
+                let body_str = serde_json::to_string(&effective_body)
+                    .unwrap_or_else(|_| effective_body.to_string());
+                // Only add default Content-Type if custom headers don't already include one
+                let has_custom_content_type = params.headers.as_ref()
+                    .map(|h| h.keys().any(|k| k.eq_ignore_ascii_case("content-type")))
+                    .unwrap_or(false);
+                if !has_custom_content_type {
+                    request = request.header("Content-Type", "application/json");
+                }
+                request = request.body(body_str);
             }
         }
 

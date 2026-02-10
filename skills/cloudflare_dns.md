@@ -1,7 +1,7 @@
 ---
 name: cloudflare_dns
-description: "Manage Cloudflare DNS — list zones, create/update/delete records for all types (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)."
-version: 1.0.0
+description: "Manage Cloudflare DNS and Redirect Rules — list zones, create/update/delete DNS records, and set up URL redirects."
+version: 1.2.0
 author: starkbot
 homepage: https://cloudflare.com
 metadata: {"requires_auth": true, "clawdbot":{"emoji":"🌐"}}
@@ -301,6 +301,55 @@ Returns a BIND zone file — useful for backups or migration.
 
 ---
 
+## Redirect Rules (URL Redirects)
+
+**Use Redirect Rules instead of Page Rules.** Page Rules are deprecated and don't work with account-owned API tokens (error 1011). Redirect Rules use the modern Rulesets API.
+
+**Common use case:** Redirect a subdomain (e.g., `discord.example.com`) to an external URL (e.g., a Discord invite link). Steps:
+1. Create a proxied DNS A record pointing to `192.0.2.1` (dummy IP — Cloudflare intercepts before it reaches origin)
+2. Create a Redirect Rule to 301 redirect to the target URL
+
+### Get Existing Redirect Rules
+
+```tool:web_fetch
+url: https://api.cloudflare.com/client/v4/zones/ZONE_ID/rulesets/phases/http_request_dynamic_redirect/entrypoint
+method: GET
+headers: {"Authorization": "Bearer $CLOUDFLARE_API_TOKEN", "Content-Type": "application/json"}
+extract_mode: raw
+```
+
+If this returns 404, no redirect ruleset exists yet — the PUT below will create one.
+
+### Create / Replace Redirect Rules
+
+**IMPORTANT: This PUT replaces ALL redirect rules for the zone. Always GET existing rules first and include them in the PUT to avoid deleting existing redirects.**
+
+```tool:web_fetch
+url: https://api.cloudflare.com/client/v4/zones/ZONE_ID/rulesets/phases/http_request_dynamic_redirect/entrypoint
+method: PUT
+headers: {"Authorization": "Bearer $CLOUDFLARE_API_TOKEN", "Content-Type": "application/json"}
+body: {"rules": [{"expression": "(http.host eq \"discord.example.com\")", "description": "Redirect discord.example.com to Discord invite", "action": "redirect", "action_parameters": {"from_value": {"status_code": 301, "target_url": {"value": "https://discord.gg/INVITE_CODE"}, "preserve_query_string": false}}}]}
+extract_mode: raw
+```
+
+**Rule fields:**
+- `expression`: Cloudflare filter expression. Common patterns:
+  - Exact host: `(http.host eq "sub.example.com")`
+  - Host + path: `(http.host eq "example.com" and http.request.uri.path eq "/old")`
+  - Starts with: `(http.host eq "example.com" and starts_with(http.request.uri.path, "/old/"))`
+- `action`: always `"redirect"`
+- `action_parameters.from_value.status_code`: `301` (permanent) or `302` (temporary)
+- `action_parameters.from_value.target_url.value`: the destination URL
+- `preserve_query_string`: `true` to forward query params, `false` to drop them
+
+### Example: Adding a rule without removing existing ones
+
+1. GET the current ruleset (save the `rules` array)
+2. Append your new rule to the array
+3. PUT the full updated rules array back
+
+---
+
 ## Error Handling
 
 | Error | Cause | Solution |
@@ -309,6 +358,7 @@ Returns a BIND zone file — useful for backups or migration.
 | 403 / Forbidden | Token lacks DNS:Edit permission | Check token scopes — needs at minimum DNS:Read, ideally DNS:Edit |
 | 404 / Not found | Invalid zone ID or record ID | List zones/records first to get valid IDs |
 | 429 / Rate limited | Too many requests | Wait and retry — Cloudflare allows 1200 requests/5 minutes |
+| 1011 / Account owned tokens | Page Rules API called with account token | **Use Redirect Rules instead** (see section above) — Page Rules are deprecated |
 | `success: false` | API error | Check `errors` array in response for details |
 | "Record already exists" | Duplicate type+name+content | Search for existing record and update it instead |
 

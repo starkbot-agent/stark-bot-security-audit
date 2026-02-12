@@ -1662,6 +1662,38 @@ impl MessageDispatcher {
                     "[SKILL] Skill '{}' already active, skipping redundant reload",
                     requested_skill
                 );
+
+                // Ensure subtype is set even if skill was pre-activated without it
+                if !orchestrator.current_subtype().is_selected() {
+                    if let Ok(Some(skill)) = self.db.get_enabled_skill_by_name(requested_skill) {
+                        if let Some(new_subtype) = self.apply_skill_subtype(&skill, orchestrator, original_message.channel_id) {
+                            // Refresh tools for the newly-set subtype
+                            let requires_tools = orchestrator.context().active_skill
+                                .as_ref()
+                                .map(|s| s.requires_tools.clone())
+                                .unwrap_or_default();
+                            *tools = self.tool_registry
+                                .get_tool_definitions_for_subtype_with_required(
+                                    tool_config,
+                                    new_subtype,
+                                    &requires_tools,
+                                );
+                            if let Some(skill_tool) = self.create_skill_tool_definition_for_subtype(new_subtype) {
+                                tools.push(skill_tool);
+                            }
+                            tools.extend(orchestrator.get_mode_tools());
+                            if !requires_tools.iter().any(|t| t == "define_tasks") {
+                                tools.retain(|t| t.name != "define_tasks");
+                            }
+                            log::info!(
+                                "[SKILL] Late subtype fix: refreshed toolset to {} with {} tools",
+                                new_subtype.label(),
+                                tools.len()
+                            );
+                        }
+                    }
+                }
+
                 crate::tools::ToolResult::success(&format!(
                     "Skill '{}' is already loaded. Follow the instructions already provided and call the actual tools directly. Do NOT call use_skill again.\n\nUser query: {}",
                     requested_skill, input
@@ -1724,10 +1756,13 @@ impl MessageDispatcher {
                 skill_result
             }
         } else {
-            // Check if subtype is None - allow System tools but block non-System tools
+            // Check if subtype is None - allow System tools and skill-required tools,
+            // but block everything else until a subtype is selected
             let current_subtype = orchestrator.current_subtype();
             let is_system_tool = current_tools.iter().any(|t| t.name == tool_name && t.group == crate::tools::types::ToolGroup::System);
-            if !current_subtype.is_selected() && !is_system_tool {
+            let is_skill_required_tool = orchestrator.context().active_skill.as_ref()
+                .map_or(false, |s| s.requires_tools.iter().any(|t| t == tool_name));
+            if !current_subtype.is_selected() && !is_system_tool && !is_skill_required_tool {
                 log::warn!(
                     "[SUBTYPE] Blocked tool '{}' - no subtype selected. Must call set_agent_subtype first.",
                     tool_name

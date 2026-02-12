@@ -21,3 +21,4 @@ pub mod broadcasted_transactions; // broadcasted_transactions (crypto tx history
 pub mod mind_nodes;  // mind_nodes, mind_node_connections (mind map feature)
 pub mod telegram_chat_log; // telegram_chat_messages (passive chat log for readHistory)
 pub mod x402_payment_limits; // x402_payment_limits (per-call max amounts per token)
+pub mod kanban;          // kanban_items (kanban board task management)

@@ -66,6 +66,7 @@ impl ReadSymbolTool {
                     required: vec!["path".to_string(), "symbol".to_string()],
                 },
                 group: ToolGroup::Development,
+                hidden: false,
             },
         }
     }

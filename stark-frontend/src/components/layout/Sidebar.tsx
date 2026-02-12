@@ -25,6 +25,7 @@ import {
   Network,
   Heart,
   Cloud,
+  Columns,
 } from 'lucide-react';
 import HeartbeatIcon from '@/components/HeartbeatIcon';
 import NavItem from './NavItem';
@@ -117,6 +118,7 @@ export default function Sidebar() {
           <NavItem to="/sessions" icon={Calendar} label="Chat Sessions" />
           <NavItem to="/memories" icon={Brain} label="Memory Browser" />
           <NavItem to="/mindmap" icon={Network} label="Mind Map" />
+          <NavItem to="/kanban" icon={Columns} label="Kanban Board" />
           <NavItem to="/identities" icon={Users} label="Identities" />
           <NavItem to="/files" icon={FolderOpen} label="Files" />
           <NavItem to="/system-files" icon={Sparkles} label="System Files" />

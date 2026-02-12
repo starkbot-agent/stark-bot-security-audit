@@ -14,6 +14,7 @@ pub mod health;
 pub mod identity;
 pub mod intrinsic;
 pub mod journal;
+pub mod kanban;
 pub mod memory;
 pub mod mindmap;
 pub mod payments;

@@ -1173,6 +1173,27 @@ impl Database {
             [],
         )?;
 
+        // Kanban board items table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS kanban_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'ready',
+                priority INTEGER NOT NULL DEFAULT 0,
+                session_id INTEGER,
+                result TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kanban_items_status ON kanban_items(status)",
+            [],
+        )?;
+
         // Initialize discord_hooks tables
         crate::discord_hooks::db::init_tables(&conn)?;
 

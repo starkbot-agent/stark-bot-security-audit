@@ -1080,6 +1080,29 @@ async fn backup_to_cloud(state: web::Data<AppState>, req: HttpRequest) -> impl R
         }
     }
 
+    // Get kanban board items
+    match state.db.list_kanban_items() {
+        Ok(items) => {
+            backup.kanban_items = items
+                .iter()
+                .map(|i| crate::backup::KanbanItemEntry {
+                    id: i.id,
+                    title: i.title.clone(),
+                    description: i.description.clone(),
+                    status: i.status.clone(),
+                    priority: i.priority,
+                    session_id: i.session_id,
+                    result: i.result.clone(),
+                    created_at: i.created_at.to_rfc3339(),
+                    updated_at: i.updated_at.to_rfc3339(),
+                })
+                .collect();
+        }
+        Err(e) => {
+            log::warn!("Failed to list kanban items for backup: {}", e);
+        }
+    }
+
     // Check if there's anything to backup
     if backup.api_keys.is_empty() && backup.mind_map_nodes.is_empty() && backup.cron_jobs.is_empty() && backup.bot_settings.is_none() && backup.heartbeat_config.is_none() && backup.channel_settings.is_empty() && backup.channels.is_empty() && backup.soul_document.is_none() && backup.identity_document.is_none() && backup.discord_registrations.is_empty() && backup.skills.is_empty() && backup.agent_settings.is_empty() && backup.agent_identity.is_none() {
         return HttpResponse::BadRequest().json(BackupResponse {
@@ -1920,6 +1943,40 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
     }
     if restored_x402_limits > 0 {
         log::info!("Restored {} x402 payment limits", restored_x402_limits);
+    }
+
+    // Restore kanban board items
+    if !backup_data.kanban_items.is_empty() {
+        // Clear existing kanban items before restore
+        if let Ok(existing) = state.db.list_kanban_items() {
+            for item in existing {
+                let _ = state.db.delete_kanban_item(item.id);
+            }
+        }
+
+        let mut restored_kanban = 0;
+        for item in &backup_data.kanban_items {
+            let request = crate::db::tables::kanban::CreateKanbanItemRequest {
+                title: item.title.clone(),
+                description: Some(item.description.clone()),
+                priority: Some(item.priority),
+            };
+            match state.db.create_kanban_item(&request) {
+                Ok(new_item) => {
+                    let update_req = crate::db::tables::kanban::UpdateKanbanItemRequest {
+                        status: Some(item.status.clone()),
+                        result: item.result.clone(),
+                        ..Default::default()
+                    };
+                    let _ = state.db.update_kanban_item(new_item.id, &update_req);
+                    restored_kanban += 1;
+                }
+                Err(e) => log::warn!("Failed to restore kanban item: {}", e),
+            }
+        }
+        if restored_kanban > 0 {
+            log::info!("Restored {} kanban board items", restored_kanban);
+        }
     }
 
     // Auto-start channels with auto_start_on_boot setting enabled

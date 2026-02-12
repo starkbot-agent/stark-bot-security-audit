@@ -25,6 +25,7 @@ import Payments from '@/pages/Payments';
 import EIP8004 from '@/pages/EIP8004';
 import CryptoTransactions from '@/pages/CryptoTransactions';
 import MindMap from '@/pages/MindMap';
+import KanbanBoard from '@/pages/KanbanBoard';
 import GuestDashboard from '@/pages/GuestDashboard';
 
 function App() {
@@ -49,6 +50,7 @@ function App() {
         <Route path="/sessions/:sessionId" element={<Sessions />} />
         <Route path="/memories" element={<MemoryBrowser />} />
         <Route path="/mindmap" element={<MindMap />} />
+        <Route path="/kanban" element={<KanbanBoard />} />
         <Route path="/identities" element={<Identities />} />
         <Route path="/identities/:identityId" element={<IdentityDetail />} />
         <Route path="/files" element={<FileBrowser />} />

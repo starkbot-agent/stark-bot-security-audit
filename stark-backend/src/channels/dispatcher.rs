@@ -1741,6 +1741,25 @@ impl MessageDispatcher {
                     tool_name
                 ))
             } else {
+                // If a skill is active and requires this tool (and we're not in safe mode),
+                // create a config override that allows execution regardless of profile/group.
+                let skill_requires_this_tool = !is_safe_mode
+                    && orchestrator.context().active_skill.as_ref()
+                        .map_or(false, |s| s.requires_tools.iter().any(|t| t == tool_name));
+                let effective_config;
+                let exec_config = if skill_requires_this_tool {
+                    effective_config = {
+                        let mut c = tool_config.clone();
+                        if !c.allow_list.iter().any(|t| t == tool_name) {
+                            c.allow_list.push(tool_name.to_string());
+                        }
+                        c
+                    };
+                    &effective_config
+                } else {
+                    tool_config
+                };
+
                 // Run tool validators before execution
                 if let Some(ref validator_registry) = self.validator_registry {
                     let validation_ctx = crate::tool_validators::ValidationContext::new(
@@ -1753,7 +1772,7 @@ impl MessageDispatcher {
                         crate::tools::ToolResult::error(error_msg)
                     } else {
                         let tool_result = self.tool_registry
-                            .execute(tool_name, tool_arguments.clone(), tool_context, Some(tool_config))
+                            .execute(tool_name, tool_arguments.clone(), tool_context, Some(exec_config))
                             .await;
                         if tool_result.success {
                             orchestrator.record_tool_call(tool_name);
@@ -1762,7 +1781,7 @@ impl MessageDispatcher {
                     }
                 } else {
                     let tool_result = self.tool_registry
-                        .execute(tool_name, tool_arguments.clone(), tool_context, Some(tool_config))
+                        .execute(tool_name, tool_arguments.clone(), tool_context, Some(exec_config))
                         .await;
                     if tool_result.success {
                         orchestrator.record_tool_call(tool_name);

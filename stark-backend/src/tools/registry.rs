@@ -1,5 +1,5 @@
 use crate::ai::multi_agent::types::AgentSubtype;
-use crate::tools::types::{ToolConfig, ToolContext, ToolDefinition, ToolGroup, ToolResult, ToolSafetyLevel};
+use crate::tools::types::{ToolConfig, ToolContext, ToolDefinition, ToolGroup, ToolProfile, ToolResult, ToolSafetyLevel};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -158,12 +158,21 @@ impl ToolRegistry {
         let mut tool_names: std::collections::HashSet<String> =
             tools.iter().map(|t| t.definition().name.clone()).collect();
 
-        // Force-include required tools even if they're not normally allowed
-        // BUT respect safe mode restrictions - never force-include tools blocked by safe mode
+        // Force-include required tools even if they're not normally allowed by
+        // subtype/profile restrictions. In safe mode, still respect restrictions
+        // (skills cannot bypass safe mode). Outside safe mode, only the deny_list blocks.
+        let is_safe_mode = config.profile == ToolProfile::SafeMode;
         for tool_name in required_tools {
             if !tool_names.contains(tool_name) {
                 if let Some(tool) = self.get(tool_name) {
-                    if config.is_tool_allowed(&tool.definition().name, tool.group()) {
+                    let should_include = if is_safe_mode {
+                        // Safe mode: respect full config restrictions
+                        config.is_tool_allowed(&tool.definition().name, tool.group())
+                    } else {
+                        // Normal mode: only check deny_list (bypass profile/group restrictions)
+                        !config.deny_list.contains(&tool.definition().name)
+                    };
+                    if should_include {
                         log::info!(
                             "[REGISTRY] Force-including required tool '{}' for active skill",
                             tool_name
@@ -172,8 +181,9 @@ impl ToolRegistry {
                         tool_names.insert(tool_name.clone());
                     } else {
                         log::warn!(
-                            "[REGISTRY] Skipping required tool '{}' - blocked by tool config (safe mode?)",
-                            tool_name
+                            "[REGISTRY] Skipping required tool '{}' - blocked by {} config",
+                            tool_name,
+                            if is_safe_mode { "safe mode" } else { "deny_list" }
                         );
                     }
                 } else {
@@ -609,6 +619,171 @@ mod tests {
             !allowed_names.contains(&"twitter_post".to_string()),
             "twitter_post MUST NOT appear in safe mode real registry tools. Got: {:?}",
             allowed_names
+        );
+    }
+
+    // =========================================================================
+    // SKILL FORCE-INCLUDE TESTS
+    //
+    // Skills can force-include tools that are outside the current subtype's
+    // allowed groups. This is how discord_tipping (finance subtype) can use
+    // discord_resolve_user (Messaging group). BUT safe mode always trumps:
+    // skills CANNOT bypass safe mode restrictions.
+    // =========================================================================
+
+    #[test]
+    fn test_skill_force_includes_tool_across_groups_in_normal_mode() {
+        // Finance subtype doesn't include Messaging group, but a skill's
+        // requires_tools should force-include a Messaging tool anyway.
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(MockTool::new("token_lookup", ToolGroup::Finance)));
+        registry.register(Arc::new(MockTool::new("discord_resolve_user", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("web3_preset", ToolGroup::Finance)));
+
+        // Full profile (admin, not safe mode)
+        let config = ToolConfig::default(); // Full profile
+
+        // Without skill requires_tools — discord_resolve_user excluded by subtype
+        let tools_no_skill = registry.get_tool_definitions_for_subtype(
+            &config,
+            AgentSubtype::Finance,
+        );
+        let names_no_skill: Vec<String> = tools_no_skill.iter().map(|t| t.name.clone()).collect();
+        assert!(
+            !names_no_skill.contains(&"discord_resolve_user".to_string()),
+            "Without skill, Messaging tool should NOT be in Finance subtype, got: {:?}",
+            names_no_skill
+        );
+
+        // With skill requires_tools — discord_resolve_user force-included
+        let tools_with_skill = registry.get_tool_definitions_for_subtype_with_required(
+            &config,
+            AgentSubtype::Finance,
+            &["discord_resolve_user".to_string()],
+        );
+        let names_with_skill: Vec<String> = tools_with_skill.iter().map(|t| t.name.clone()).collect();
+        assert!(
+            names_with_skill.contains(&"discord_resolve_user".to_string()),
+            "Skill requires_tools MUST force-include discord_resolve_user in Finance subtype, got: {:?}",
+            names_with_skill
+        );
+    }
+
+    #[test]
+    fn test_skill_force_includes_across_all_non_safe_profiles() {
+        // Test that force-include works regardless of channel profile (Finance, Developer, etc.)
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(MockTool::new("token_lookup", ToolGroup::Finance)));
+        registry.register(Arc::new(MockTool::new("discord_resolve_user", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("exec", ToolGroup::Exec)));
+
+        // Finance profile — doesn't include Messaging or Exec
+        let finance_config = ToolConfig {
+            profile: crate::tools::types::ToolProfile::Finance,
+            ..Default::default()
+        };
+        let tools = registry.get_tool_definitions_for_subtype_with_required(
+            &finance_config,
+            AgentSubtype::Finance,
+            &["discord_resolve_user".to_string(), "exec".to_string()],
+        );
+        let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        assert!(
+            names.contains(&"discord_resolve_user".to_string()),
+            "Finance profile + skill must include discord_resolve_user, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"exec".to_string()),
+            "Finance profile + skill must include exec, got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_skill_force_include_blocked_by_safe_mode() {
+        // Safe mode ALWAYS trumps skill requires_tools
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(MockTool::new("discord_resolve_user", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("web3_preset", ToolGroup::Finance)));
+        registry.register(Arc::new(MockTool::new("broadcast_web3_tx", ToolGroup::Finance)));
+        // Also add a safe-mode allowed tool for comparison
+        registry.register(Arc::new(MockTool::new("say_to_user", ToolGroup::System)));
+        registry.register(Arc::new(MockTool::new("token_lookup", ToolGroup::Finance)));
+
+        let config = ToolConfig::safe_mode();
+
+        let tools = registry.get_tool_definitions_for_subtype_with_required(
+            &config,
+            AgentSubtype::Finance,
+            &[
+                "discord_resolve_user".to_string(),
+                "web3_preset".to_string(),
+                "broadcast_web3_tx".to_string(),
+                "say_to_user".to_string(),  // This IS in safe mode allow list
+                "token_lookup".to_string(), // This IS in safe mode allow list
+            ],
+        );
+        let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+
+        // NOT in safe mode allow list — must be blocked
+        assert!(
+            !names.contains(&"discord_resolve_user".to_string()),
+            "Safe mode must block discord_resolve_user even with skill requires_tools, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"web3_preset".to_string()),
+            "Safe mode must block web3_preset even with skill requires_tools, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"broadcast_web3_tx".to_string()),
+            "Safe mode must block broadcast_web3_tx even with skill requires_tools, got: {:?}",
+            names
+        );
+
+        // IN safe mode allow list — should be included
+        assert!(
+            names.contains(&"say_to_user".to_string()),
+            "Safe mode allow-listed tool should still work with skill, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"token_lookup".to_string()),
+            "Safe mode allow-listed tool should still work with skill, got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_skill_force_include_respects_deny_list() {
+        // Even in normal mode, deny_list should block skill requires_tools
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(MockTool::new("discord_resolve_user", ToolGroup::Messaging)));
+        registry.register(Arc::new(MockTool::new("dangerous_tool", ToolGroup::Finance)));
+
+        let config = ToolConfig {
+            deny_list: vec!["dangerous_tool".to_string()],
+            ..Default::default()
+        };
+
+        let tools = registry.get_tool_definitions_for_subtype_with_required(
+            &config,
+            AgentSubtype::Finance,
+            &["discord_resolve_user".to_string(), "dangerous_tool".to_string()],
+        );
+        let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+
+        assert!(
+            names.contains(&"discord_resolve_user".to_string()),
+            "Non-denied skill tool should be included, got: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"dangerous_tool".to_string()),
+            "Deny-listed tool must be blocked even with skill requires_tools, got: {:?}",
+            names
         );
     }
 

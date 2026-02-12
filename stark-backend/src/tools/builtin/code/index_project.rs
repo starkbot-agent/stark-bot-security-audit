@@ -56,6 +56,7 @@ impl IndexProjectTool {
                     required: vec![],
                 },
                 group: ToolGroup::Development,
+                hidden: false,
             },
         }
     }

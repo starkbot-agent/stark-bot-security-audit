@@ -36,6 +36,7 @@ fn register_all_tools(registry: &mut ToolRegistry) {
     registry.register(Arc::new(builtin::AddTaskTool::new()));
     registry.register(Arc::new(builtin::DefineTasksTool::new()));
     registry.register(Arc::new(builtin::ManageSkillsTool::new()));
+    registry.register(Arc::new(builtin::ModifyKanbanTool::new()));
     registry.register(Arc::new(builtin::InstallApiKeyTool::new()));
 
     // Web tools (shared)

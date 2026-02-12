@@ -46,6 +46,24 @@ impl Default for SchedulerConfig {
 /// Maximum time for a heartbeat execution before timeout (60 seconds)
 const HEARTBEAT_TIMEOUT_SECS: u64 = 60;
 
+/// Default timeout for cron job execution (10 minutes)
+const DEFAULT_CRON_JOB_TIMEOUT_SECS: u64 = 10 * 60;
+
+/// Exponential backoff delays (in seconds) indexed by consecutive error count.
+/// After the last entry the delay stays constant.
+const ERROR_BACKOFF_SECS: &[u64] = &[
+    30,       // 1st error  →  30s
+    60,       // 2nd error  →   1 min
+    5 * 60,   // 3rd error  →   5 min
+    15 * 60,  // 4th error  →  15 min
+    60 * 60,  // 5th+ error →  60 min
+];
+
+fn error_backoff_secs(error_count: i32) -> u64 {
+    let idx = (error_count.max(1) - 1) as usize;
+    ERROR_BACKOFF_SECS[idx.min(ERROR_BACKOFF_SECS.len() - 1)]
+}
+
 /// The scheduler service that runs cron jobs and heartbeats
 pub struct Scheduler {
     db: Arc<Database>,
@@ -273,22 +291,68 @@ impl Scheduler {
             force_safe_mode: false,
         };
 
-        // Execute the job
-        let result = self.dispatcher.dispatch(normalized).await;
+        // Execute the job with timeout
+        let timeout_secs = job.timeout_seconds
+            .map(|s| s.max(10) as u64)
+            .unwrap_or(DEFAULT_CRON_JOB_TIMEOUT_SECS);
+
+        let dispatch_result = timeout(
+            TokioDuration::from_secs(timeout_secs),
+            self.dispatcher.dispatch(normalized),
+        ).await;
 
         let completed_at = Utc::now();
         let duration_ms = (completed_at - started_at).num_milliseconds();
 
-        // Note: next_run_at was already set at the start to prevent race conditions
-        // Update job status with final result
-        let success = result.error.is_none();
+        // Handle timeout vs normal result
+        let (success, response, error_msg) = match dispatch_result {
+            Ok(result) => {
+                let ok = result.error.is_none();
+                (ok, result.response, result.error)
+            }
+            Err(_) => {
+                let err_msg = format!(
+                    "Job timed out after {}s", timeout_secs
+                );
+                log::warn!("Cron job '{}' timed out after {}s", job.name, timeout_secs);
+                (false, String::new(), Some(err_msg))
+            }
+        };
+
+        // Apply error backoff: on failure, push next_run_at further into the future
+        // to prevent retry storms when a job keeps failing (e.g., API key expired, model down).
+        // Backoff: 30s → 1min → 5min → 15min → 60min based on consecutive error count.
+        let final_next_run_str = if !success {
+            let new_error_count = job.error_count + 1;
+            let backoff = error_backoff_secs(new_error_count);
+            let backoff_time = completed_at + Duration::seconds(backoff as i64);
+
+            // Use whichever is later: the normal next_run or the backoff time
+            let final_next = match next_run {
+                Some(normal_next) => {
+                    if backoff_time > normal_next { Some(backoff_time) } else { Some(normal_next) }
+                }
+                None => Some(backoff_time), // one-shot jobs: still apply backoff
+            };
+
+            log::info!(
+                "Cron job '{}' failed (error #{}) — applying {}s backoff, next run at {:?}",
+                job.name, new_error_count, backoff, final_next
+            );
+
+            final_next.map(|dt| dt.to_rfc3339())
+        } else {
+            next_run_str.clone()
+        };
+
+        // Update job status with final result (including backoff-adjusted next_run_at)
         self.db
             .update_cron_job_run_status(
                 job.id,
                 &started_at_str,
-                next_run_str.as_deref(),
+                final_next_run_str.as_deref(),
                 success,
-                result.error.as_deref(),
+                error_msg.as_deref(),
             )
             .map_err(|e| format!("Failed to update job status: {}", e))?;
 
@@ -298,8 +362,8 @@ impl Scheduler {
             &started_at_str,
             Some(&completed_at.to_rfc3339()),
             success,
-            Some(&result.response),
-            result.error.as_deref(),
+            Some(&response),
+            error_msg.as_deref(),
             Some(duration_ms),
         );
 
@@ -311,7 +375,7 @@ impl Scheduler {
 
         // Handle delivery if configured
         if job.deliver && job.channel_id.is_some() {
-            self.deliver_result(job, &result.response).await?;
+            self.deliver_result(job, &response).await?;
         }
 
         // Broadcast job completion event

@@ -1035,6 +1035,7 @@ async fn main() -> std::io::Result<()> {
             .configure(controllers::tx_queue::config)
             .configure(controllers::broadcasted_transactions::config)
             .configure(controllers::mindmap::config)
+            .configure(controllers::kanban::config)
             .configure(controllers::memory::config)
             .configure(controllers::well_known::config)
             .configure(controllers::x402_limits::config)

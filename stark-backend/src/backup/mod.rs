@@ -67,6 +67,8 @@ pub struct BackupData {
     pub agent_identity: Option<AgentIdentityEntry>,
     /// x402 payment limits (per-call max amounts per token)
     pub x402_payment_limits: Vec<X402PaymentLimitEntry>,
+    /// Kanban board items
+    pub kanban_items: Vec<KanbanItemEntry>,
 }
 
 /// Manual Default because DateTime<Utc> doesn't derive Default
@@ -92,6 +94,7 @@ impl Default for BackupData {
             agent_settings: Vec::new(),
             agent_identity: None,
             x402_payment_limits: Vec::new(),
+            kanban_items: Vec::new(),
         }
     }
 }
@@ -125,6 +128,7 @@ impl BackupData {
             + self.agent_settings.len()
             + if self.agent_identity.is_some() { 1 } else { 0 }
             + self.x402_payment_limits.len()
+            + self.kanban_items.len()
     }
 }
 
@@ -317,6 +321,21 @@ pub struct X402PaymentLimitEntry {
     pub max_amount: String,
     pub decimals: u8,
     pub display_name: String,
+}
+
+/// Kanban board item entry in backup
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KanbanItemEntry {
+    pub id: i64,
+    pub title: String,
+    pub description: String,
+    pub status: String,
+    pub priority: i32,
+    pub session_id: Option<i64>,
+    pub result: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 /// Options for what to include in a backup

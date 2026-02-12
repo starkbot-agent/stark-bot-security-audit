@@ -128,6 +128,7 @@ impl VerifyChangesTool {
                     required: vec![],
                 },
                 group: ToolGroup::Development,
+                hidden: false,
             },
         }
     }

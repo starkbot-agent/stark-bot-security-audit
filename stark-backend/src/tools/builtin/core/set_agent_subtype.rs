@@ -124,12 +124,13 @@ impl SetAgentSubtypeTool {
                  👉 Pick the matching skill and follow its instructions.\n\n\
                  ## Low-level tools (only when no skill fits)\n\
                  grep, glob, edit_file, write_file, delete_file, rename_file, git, exec,\n\
-                 read_symbol, verify_changes, index_project\n\n\
+                 read_symbol, verify_changes, index_project, modify_kanban\n\n\
                  ## Smart Workflow\n\
                  • Use `index_project` first on unfamiliar codebases to understand the structure.\n\
                  • Use `read_symbol` to inspect specific functions/structs without reading entire files.\n\
                  • After editing code, ALWAYS use `verify_changes` to confirm it compiles.\n\
-                 • Use `verify_changes` with checks='test' to run the full test suite."
+                 • Use `verify_changes` with checks='test' to run the full test suite.\n\
+                 • Check `modify_kanban(action: \"list\")` for queued tasks. Use `pick_task` to grab work and `update_status` to mark complete."
                     .to_string()
             }
             AgentSubtype::Secretary => {

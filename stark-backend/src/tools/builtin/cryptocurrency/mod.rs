@@ -21,6 +21,7 @@ mod web3_function_call;
 mod web3_preset_function_call;
 pub mod web3_tx;
 mod erc8128_fetch;
+mod siwa_auth;
 mod x402_agent_invoke;
 mod x402_fetch;
 mod x402_post;
@@ -28,6 +29,7 @@ pub mod wallet_monitor;
 mod x402_rpc;
 
 pub use erc8128_fetch::Erc8128FetchTool;
+pub use siwa_auth::SiwaAuthTool;
 pub use bridge_usdc::BridgeUsdcTool;
 pub use broadcast_web3_tx::BroadcastWeb3TxTool;
 pub use decode_calldata::DecodeCalldataTool;

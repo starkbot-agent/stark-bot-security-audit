@@ -27,6 +27,7 @@ import CryptoTransactions from '@/pages/CryptoTransactions';
 import MindMap from '@/pages/MindMap';
 import KanbanBoard from '@/pages/KanbanBoard';
 import Modules from '@/pages/Modules';
+import ModuleDashboard from '@/pages/ModuleDashboard';
 import GuestDashboard from '@/pages/GuestDashboard';
 
 function App() {
@@ -63,6 +64,7 @@ function App() {
         <Route path="/eip8004" element={<EIP8004 />} />
         <Route path="/crypto-transactions" element={<CryptoTransactions />} />
         <Route path="/modules" element={<Modules />} />
+        <Route path="/modules/:name" element={<ModuleDashboard />} />
       </Route>
     </Routes>
   );

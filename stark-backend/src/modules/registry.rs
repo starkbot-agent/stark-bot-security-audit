@@ -1,5 +1,6 @@
 //! Module registry — holds all available (compilable) modules
 
+use super::discord_tipping::DiscordTippingModule;
 use super::wallet_monitor::WalletMonitorModule;
 use super::Module;
 use std::collections::HashMap;
@@ -16,6 +17,7 @@ impl ModuleRegistry {
             modules: HashMap::new(),
         };
         reg.register(Box::new(WalletMonitorModule));
+        reg.register(Box::new(DiscordTippingModule));
         // Future: reg.register(Box::new(CopyTradeModule));
         reg
     }

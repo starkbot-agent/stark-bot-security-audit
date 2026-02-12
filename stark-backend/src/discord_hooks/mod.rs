@@ -207,10 +207,12 @@ pub async fn process(
     let user_id = msg.author.id.to_string();
     let user_name = msg.author.name.clone();
 
-    // Get or create user profile
-    if let Err(e) = db::get_or_create_profile(db, &user_id, &user_name) {
-        log::error!("Discord hooks: Failed to get/create profile: {}", e);
-        // Don't fail the whole request, just log it
+    // Get or create user profile (only if discord_tipping module is installed)
+    if db.is_module_installed("discord_tipping").unwrap_or(false) {
+        if let Err(e) = db::get_or_create_profile(db, &user_id, &user_name) {
+            log::error!("Discord hooks: Failed to get/create profile: {}", e);
+            // Don't fail the whole request, just log it
+        }
     }
 
     // Check if user is admin (explicit IDs or Discord Administrator permission)
@@ -242,6 +244,34 @@ pub async fn process(
             ];
             let response = responses.choose(&mut rand::thread_rng()).unwrap_or(&responses[0]);
             return Ok(ProcessResult::handled(response.to_string()));
+        }
+
+        // "force_register" command - admin registers an address for another user
+        if cmd_lower.starts_with("force_register") {
+            log::info!(
+                "Discord hooks: Admin {} using force_register command",
+                user_name
+            );
+            match commands::force_register::parse(&command_text) {
+                Some((target_user_id, address)) => {
+                    let response = commands::force_register::execute(
+                        &target_user_id,
+                        &address,
+                        &user_id,
+                        db,
+                    )
+                    .await?;
+                    return Ok(ProcessResult::handled(response));
+                }
+                None => {
+                    return Ok(ProcessResult::handled(
+                        "Invalid force_register command.\n\n\
+                        **Usage:** `@starkbot force_register @user 0x...`\n\
+                        **Example:** `@starkbot force_register @alice 0x1234567890123456789012345678901234567890`"
+                            .to_string(),
+                    ));
+                }
+            }
         }
 
         // "register" command - handle directly like a regular user

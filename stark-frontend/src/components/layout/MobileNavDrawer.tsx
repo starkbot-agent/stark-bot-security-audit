@@ -113,7 +113,7 @@ export default function MobileNavDrawer({ isOpen, onClose }: MobileNavDrawerProp
     { to: '/mindmap', icon: Network, label: 'Mind Map' },
     { to: '/kanban', icon: Columns, label: 'Kanban Board' },
     { to: '/identities', icon: Users, label: 'Identities' },
-    { to: '/files', icon: FolderOpen, label: 'Files' },
+    { to: '/files', icon: FolderOpen, label: 'Workspace Files' },
     { to: '/system-files', icon: Sparkles, label: 'System Files' },
     { to: '/journal', icon: BookOpen, label: 'Journal' },
   ];

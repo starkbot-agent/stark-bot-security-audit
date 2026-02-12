@@ -988,23 +988,17 @@ async fn backup_to_cloud(state: web::Data<AppState>, req: HttpRequest) -> impl R
         }
     }
 
-    // Get discord registrations
-    match crate::discord_hooks::db::list_registered_profiles(&state.db) {
-        Ok(profiles) => {
-            backup.discord_registrations = profiles
-                .iter()
-                .filter_map(|p| {
-                    p.public_address.as_ref().map(|addr| DiscordRegistrationEntry {
-                        discord_user_id: p.discord_user_id.clone(),
-                        discord_username: p.discord_username.clone(),
-                        public_address: addr.clone(),
-                        registered_at: p.registered_at.clone(),
-                    })
-                })
-                .collect();
-        }
-        Err(e) => {
-            log::warn!("Failed to list discord registrations for backup: {}", e);
+    // Collect backup data from installed modules (generic module backup)
+    {
+        let module_registry = crate::modules::ModuleRegistry::new();
+        let installed = state.db.list_installed_modules().unwrap_or_default();
+        for entry in &installed {
+            if let Some(module) = module_registry.get(&entry.module_name) {
+                if let Some(data) = module.backup_data(&state.db) {
+                    log::info!("Including module '{}' data in backup", entry.module_name);
+                    backup.module_data.insert(entry.module_name.clone(), data);
+                }
+            }
         }
     }
 
@@ -1108,7 +1102,7 @@ async fn backup_to_cloud(state: web::Data<AppState>, req: HttpRequest) -> impl R
     }
 
     // Check if there's anything to backup
-    if backup.api_keys.is_empty() && backup.mind_map_nodes.is_empty() && backup.cron_jobs.is_empty() && backup.bot_settings.is_none() && backup.heartbeat_config.is_none() && backup.channel_settings.is_empty() && backup.channels.is_empty() && backup.soul_document.is_none() && backup.identity_document.is_none() && backup.discord_registrations.is_empty() && backup.skills.is_empty() && backup.agent_settings.is_empty() && backup.agent_identity.is_none() {
+    if backup.is_empty() {
         return HttpResponse::BadRequest().json(BackupResponse {
             success: false,
             key_count: None,
@@ -1447,7 +1441,7 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
     };
 
     // Try to parse as new BackupData format first, fall back to legacy Vec<BackupKey>
-    let backup_data: BackupData = match serde_json::from_str(&decrypted_json) {
+    let mut backup_data: BackupData = match serde_json::from_str(&decrypted_json) {
         Ok(data) => data,
         Err(_) => {
             // Try legacy format (just API keys)
@@ -1822,32 +1816,63 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
         }
     }
 
-    // Restore discord registrations
+    // Restore module data (generic module restore)
     let mut restored_discord_registrations = 0;
-    if !backup_data.discord_registrations.is_empty() {
-        // Clear existing registrations before restore
-        match crate::discord_hooks::db::clear_registrations_for_restore(&state.db) {
-            Ok(deleted) => {
-                log::info!("Cleared {} discord registrations for restore", deleted);
-            }
-            Err(e) => {
-                log::warn!("Failed to clear discord registrations for restore: {}", e);
-            }
+    {
+        let module_registry = crate::modules::ModuleRegistry::new();
+
+        // Backward-compat shim: if old discord_registrations field is populated
+        // AND module_data["discord_tipping"] is absent, convert old format
+        if !backup_data.discord_registrations.is_empty() && !backup_data.module_data.contains_key("discord_tipping") {
+            log::info!("Converting legacy discord_registrations to module_data format");
+            let legacy_entries: Vec<serde_json::Value> = backup_data.discord_registrations.iter().map(|reg| {
+                serde_json::json!({
+                    "discord_user_id": reg.discord_user_id,
+                    "discord_username": reg.discord_username,
+                    "public_address": reg.public_address,
+                    "registered_at": reg.registered_at,
+                })
+            }).collect();
+            backup_data.module_data.insert("discord_tipping".to_string(), serde_json::Value::Array(legacy_entries));
         }
 
-        for reg in &backup_data.discord_registrations {
-            let username = reg.discord_username.as_deref().unwrap_or("unknown");
-            match crate::discord_hooks::db::get_or_create_profile(&state.db, &reg.discord_user_id, username) {
-                Ok(_) => {
-                    if let Err(e) = crate::discord_hooks::db::register_address(&state.db, &reg.discord_user_id, &reg.public_address) {
-                        log::warn!("Failed to restore discord registration for {}: {}", reg.discord_user_id, e);
-                    } else {
-                        restored_discord_registrations += 1;
+        // Restore each module's data
+        for (module_name, data) in &backup_data.module_data {
+            if let Some(module) = module_registry.get(module_name) {
+                // Ensure the module's tables exist before restoring
+                if module.has_db_tables() {
+                    let conn = state.db.conn();
+                    if let Err(e) = module.init_tables(&conn) {
+                        log::warn!("Failed to init tables for module '{}' during restore: {}", module_name, e);
+                        continue;
                     }
                 }
-                Err(e) => {
-                    log::warn!("Failed to create discord profile for {}: {}", reg.discord_user_id, e);
+                // Auto-install the module if not already installed
+                if !state.db.is_module_installed(module_name).unwrap_or(true) {
+                    let required_keys = module.required_api_keys();
+                    let key_strs: Vec<&str> = required_keys.iter().copied().collect();
+                    let _ = state.db.install_module(
+                        module_name,
+                        module.description(),
+                        module.version(),
+                        module.has_db_tables(),
+                        module.has_tools(),
+                        module.has_worker(),
+                        &key_strs,
+                    );
                 }
+                match module.restore_data(&state.db, data) {
+                    Ok(()) => {
+                        log::info!("Restored module data for '{}'", module_name);
+                        if module_name == "discord_tipping" {
+                            // Count restored entries for response
+                            restored_discord_registrations = data.as_array().map(|a| a.len()).unwrap_or(0);
+                        }
+                    }
+                    Err(e) => log::warn!("Failed to restore module data for '{}': {}", module_name, e),
+                }
+            } else {
+                log::warn!("Skipping restore for unknown module '{}'", module_name);
             }
         }
     }
@@ -2304,7 +2329,13 @@ async fn preview_cloud_keys(state: web::Data<AppState>, req: HttpRequest) -> imp
             cron_job_count: Some(backup_data.cron_jobs.len()),
             channel_count: Some(backup_data.channels.len()),
             channel_setting_count: Some(backup_data.channel_settings.len()),
-            discord_registration_count: Some(backup_data.discord_registrations.len()),
+            discord_registration_count: Some(
+                // Check module_data first (new format), fall back to legacy field
+                backup_data.module_data.get("discord_tipping")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or_else(|| backup_data.discord_registrations.len())
+            ),
             skill_count: Some(backup_data.skills.len()),
             agent_settings_count: Some(backup_data.agent_settings.len()),
             has_settings: Some(backup_data.bot_settings.is_some()),

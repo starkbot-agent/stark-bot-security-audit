@@ -1,5 +1,6 @@
 //! Discord command handling for limited user commands
 
+pub mod force_register;
 mod help;
 mod register;
 mod status;
@@ -62,6 +63,18 @@ pub fn parse(text: &str) -> Option<Command> {
 
 /// Execute a command and return the response
 pub async fn execute(cmd: Command, user_id: &str, db: &Database) -> Result<String, String> {
+    // Guard: tipping commands require the discord_tipping module to be installed
+    if !matches!(cmd, Command::Help) {
+        if !db.is_module_installed("discord_tipping").unwrap_or(false) {
+            return Ok(
+                "The **discord_tipping** module is not installed.\n\n\
+                Ask an admin to install it from the Modules page or via:\n\
+                `manage_modules(action=\"install\", name=\"discord_tipping\")`"
+                    .to_string(),
+            );
+        }
+    }
+
     match cmd {
         Command::Register(addr) => register::execute(user_id, &addr, db).await,
         Command::Status => status::execute(user_id, db).await,

@@ -1,6 +1,7 @@
 use crate::ai::multi_agent::types::AgentSubtype;
 use crate::tools::types::{ToolConfig, ToolContext, ToolDefinition, ToolGroup, ToolProfile, ToolResult, ToolSafetyLevel};
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,41 +34,48 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// Registry that holds all available tools
+/// Registry that holds all available tools.
+/// Uses interior mutability (RwLock) so tools can be registered/unregistered
+/// at runtime without requiring &mut self (enables module hot-reload).
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn Tool>>,
+    tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     default_config: ToolConfig,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         ToolRegistry {
-            tools: HashMap::new(),
+            tools: RwLock::new(HashMap::new()),
             default_config: ToolConfig::default(),
         }
     }
 
     pub fn with_config(config: ToolConfig) -> Self {
         ToolRegistry {
-            tools: HashMap::new(),
+            tools: RwLock::new(HashMap::new()),
             default_config: config,
         }
     }
 
-    /// Register a tool
-    pub fn register(&mut self, tool: Arc<dyn Tool>) {
+    /// Register a tool (thread-safe, takes &self via interior mutability)
+    pub fn register(&self, tool: Arc<dyn Tool>) {
         let name = tool.definition().name.clone();
-        self.tools.insert(name, tool);
+        self.tools.write().insert(name, tool);
+    }
+
+    /// Unregister a tool by name. Returns true if it was present.
+    pub fn unregister(&self, name: &str) -> bool {
+        self.tools.write().remove(name).is_some()
     }
 
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.get(name).cloned()
+        self.tools.read().get(name).cloned()
     }
 
     /// List all registered tools
-    pub fn list(&self) -> Vec<&Arc<dyn Tool>> {
-        self.tools.values().collect()
+    pub fn list(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools.read().values().cloned().collect()
     }
 
     /// Get tools at or above a minimum safety level, filtered by config.
@@ -75,6 +83,7 @@ impl ToolRegistry {
     /// - SafeMode: tools with safety_level >= SafeMode (SafeMode only)
     pub fn get_tools_at_safety_level(&self, config: &ToolConfig, min_level: ToolSafetyLevel) -> Vec<Arc<dyn Tool>> {
         self.tools
+            .read()
             .values()
             .filter(|tool| {
                 tool.safety_level() >= min_level
@@ -95,6 +104,7 @@ impl ToolRegistry {
     /// Get tools that are allowed by a configuration
     pub fn get_allowed_tools(&self, config: &ToolConfig) -> Vec<Arc<dyn Tool>> {
         self.tools
+            .read()
             .values()
             .filter(|tool| {
                 let def = tool.definition();
@@ -114,6 +124,7 @@ impl ToolRegistry {
     ) -> Vec<Arc<dyn Tool>> {
         let allowed_groups = subtype.allowed_tool_groups();
         self.tools
+            .read()
             .values()
             .filter(|tool| {
                 let def = tool.definition();
@@ -248,17 +259,17 @@ impl ToolRegistry {
 
     /// Check if a tool exists
     pub fn has_tool(&self, name: &str) -> bool {
-        self.tools.contains_key(name)
+        self.tools.read().contains_key(name)
     }
 
     /// Get count of registered tools
     pub fn len(&self) -> usize {
-        self.tools.len()
+        self.tools.read().len()
     }
 
     /// Check if registry is empty
     pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
+        self.tools.read().is_empty()
     }
 }
 

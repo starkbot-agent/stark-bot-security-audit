@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Package,
   Check,
   X,
-  Download,
   Trash2,
   Play,
   Pause,
@@ -11,6 +11,8 @@ import {
   Database,
   Wrench,
   Activity,
+  RefreshCw,
+  LayoutDashboard,
 } from 'lucide-react';
 import Card, { CardContent } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
@@ -25,15 +27,18 @@ interface ModuleInfo {
   has_db_tables: boolean;
   has_tools: boolean;
   has_worker: boolean;
+  has_dashboard: boolean;
   required_api_keys: string[];
   api_keys_met: boolean;
   installed_at: string | null;
 }
 
 export default function Modules() {
+  const navigate = useNavigate();
   const [modules, setModules] = useState<ModuleInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [reloadLoading, setReloadLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
@@ -73,6 +78,28 @@ export default function Modules() {
     }
   };
 
+  const reloadModules = async () => {
+    setReloadLoading(true);
+    setMessage(null);
+    try {
+      const result = await apiFetch<{ status: string; message: string; activated: string[] }>(
+        '/modules/reload',
+        { method: 'POST' }
+      );
+      setMessage({ type: 'success', text: result.message || 'Modules reloaded' });
+      await loadModules();
+    } catch (err: any) {
+      let errorMsg = err.message || 'Failed to reload modules';
+      try {
+        const parsed = JSON.parse(errorMsg);
+        errorMsg = parsed.error || errorMsg;
+      } catch {}
+      setMessage({ type: 'error', text: errorMsg });
+    } finally {
+      setReloadLoading(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="p-8 flex items-center justify-center min-h-[400px]">
@@ -87,11 +114,22 @@ export default function Modules() {
   return (
     <div className="p-8">
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white mb-2">Modules</h1>
-        <p className="text-slate-400">
-          Install and manage optional plugin modules. Modules add features like wallet monitoring, copy trading, and more.
-        </p>
+      <div className="mb-8 flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white mb-2">Modules</h1>
+          <p className="text-slate-400">
+            Enable and manage optional modules. Modules add features like wallet monitoring, copy trading, and more.
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={reloadLoading || actionLoading !== null}
+          onClick={reloadModules}
+        >
+          <RefreshCw className={`w-4 h-4 mr-1.5 ${reloadLoading ? 'animate-spin' : ''}`} />
+          Reload Modules
+        </Button>
       </div>
 
       {/* Messages */}
@@ -128,19 +166,13 @@ export default function Modules() {
                       <span className="text-xs text-slate-500 bg-slate-700 px-2 py-0.5 rounded">
                         v{module.version}
                       </span>
-                      {module.installed && module.enabled && (
+                      {module.installed && module.enabled ? (
                         <span className="text-xs text-green-400 bg-green-500/20 px-2 py-0.5 rounded flex items-center gap-1">
                           <Check className="w-3 h-3" /> Active
                         </span>
-                      )}
-                      {module.installed && !module.enabled && (
-                        <span className="text-xs text-yellow-400 bg-yellow-500/20 px-2 py-0.5 rounded flex items-center gap-1">
+                      ) : (
+                        <span className="text-xs text-slate-400 bg-slate-700 px-2 py-0.5 rounded flex items-center gap-1">
                           <Pause className="w-3 h-3" /> Disabled
-                        </span>
-                      )}
-                      {!module.installed && (
-                        <span className="text-xs text-slate-400 bg-slate-700 px-2 py-0.5 rounded">
-                          Not installed
                         </span>
                       )}
                     </div>
@@ -200,53 +232,50 @@ export default function Modules() {
 
                   {/* Right: Actions */}
                   <div className="flex flex-col gap-2 flex-shrink-0">
-                    {!module.installed ? (
+                    {module.enabled && module.has_dashboard && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => navigate(`/modules/${encodeURIComponent(module.name)}`)}
+                      >
+                        <LayoutDashboard className="w-4 h-4 mr-1" />
+                        Dashboard
+                      </Button>
+                    )}
+                    {module.enabled ? (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={actionLoading !== null}
+                        isLoading={actionLoading === `${module.name}-disable`}
+                        onClick={() => performAction(module.name, 'disable')}
+                      >
+                        <Pause className="w-4 h-4 mr-1" />
+                        Disable
+                      </Button>
+                    ) : (
                       <Button
                         size="sm"
                         variant="primary"
                         disabled={!module.api_keys_met || actionLoading !== null}
-                        isLoading={actionLoading === `${module.name}-install`}
-                        onClick={() => performAction(module.name, 'install')}
+                        isLoading={actionLoading === `${module.name}-enable`}
+                        onClick={() => performAction(module.name, 'enable')}
                       >
-                        <Download className="w-4 h-4 mr-1" />
-                        Install
+                        <Play className="w-4 h-4 mr-1" />
+                        Enable
                       </Button>
-                    ) : (
-                      <>
-                        {module.enabled ? (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            disabled={actionLoading !== null}
-                            isLoading={actionLoading === `${module.name}-disable`}
-                            onClick={() => performAction(module.name, 'disable')}
-                          >
-                            <Pause className="w-4 h-4 mr-1" />
-                            Disable
-                          </Button>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="primary"
-                            disabled={actionLoading !== null}
-                            isLoading={actionLoading === `${module.name}-enable`}
-                            onClick={() => performAction(module.name, 'enable')}
-                          >
-                            <Play className="w-4 h-4 mr-1" />
-                            Enable
-                          </Button>
-                        )}
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          disabled={actionLoading !== null}
-                          isLoading={actionLoading === `${module.name}-uninstall`}
-                          onClick={() => performAction(module.name, 'uninstall')}
-                        >
-                          <Trash2 className="w-4 h-4 mr-1" />
-                          Uninstall
-                        </Button>
-                      </>
+                    )}
+                    {module.installed && (
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        disabled={actionLoading !== null}
+                        isLoading={actionLoading === `${module.name}-uninstall`}
+                        onClick={() => performAction(module.name, 'uninstall')}
+                      >
+                        <Trash2 className="w-4 h-4 mr-1" />
+                        Uninstall
+                      </Button>
                     )}
                   </div>
                 </div>
@@ -259,10 +288,10 @@ export default function Modules() {
       {/* Help text */}
       <div className="mt-8 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
         <p className="text-sm text-slate-400">
-          <strong className="text-slate-300">Note:</strong> After installing or enabling a module, restart StarkBot
-          to fully activate tools and background workers. You can also use the AI chat to manage modules:
+          Modules activate immediately when enabled. Use <strong className="text-slate-300">Reload Modules</strong> to
+          re-sync all module tools and workers. You can also manage modules via AI chat:
           <code className="text-stark-400 bg-slate-700 px-1.5 py-0.5 rounded mx-1">
-            manage_modules(action="install", name="wallet_monitor")
+            manage_modules(action="enable", name="wallet_monitor")
           </code>
         </p>
       </div>

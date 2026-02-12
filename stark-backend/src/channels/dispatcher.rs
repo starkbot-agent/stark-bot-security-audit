@@ -2048,10 +2048,44 @@ impl MessageDispatcher {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            if is_safe_mode {
-                // Safe mode: always terminate — no multi-task flows
-                log::info!("[ORCHESTRATED_LOOP] say_to_user terminating loop (safe_mode=true, finished_task={}, define_tasks_in_batch={})", finished_task, batch_state.define_tasks_replaced_queue);
+            if is_safe_mode && !batch_state.define_tasks_replaced_queue && orchestrator.task_queue_is_empty() {
+                // Safe mode with no task queue: terminate immediately
+                log::info!("[ORCHESTRATED_LOOP] say_to_user terminating loop (safe_mode=true, no task queue)");
                 processed.orchestrator_complete = true;
+            } else if is_safe_mode && !batch_state.define_tasks_replaced_queue && finished_task && !orchestrator.task_queue_is_empty() {
+                // Safe mode with task queue and finished_task: advance like normal mode
+                if let Some(completed_task_id) = orchestrator.complete_current_task() {
+                    log::info!("[ORCHESTRATED_LOOP] say_to_user (safe_mode) completed task {}", completed_task_id);
+                    self.broadcast_task_status_change(
+                        original_message.channel_id,
+                        session_id,
+                        completed_task_id,
+                        "completed",
+                        &format!("Completed via say_to_user"),
+                    );
+                }
+                match self.advance_to_next_task_or_complete(
+                    original_message.channel_id,
+                    session_id,
+                    orchestrator,
+                ) {
+                    TaskAdvanceResult::AllTasksComplete => {
+                        log::info!("[ORCHESTRATED_LOOP] say_to_user (safe_mode): all tasks done, terminating loop");
+                        processed.orchestrator_complete = true;
+                    }
+                    TaskAdvanceResult::NextTaskStarted => {
+                        log::info!("[ORCHESTRATED_LOOP] say_to_user (safe_mode): advanced to next task, continuing loop");
+                    }
+                    TaskAdvanceResult::InconsistentState => {
+                        log::warn!("[ORCHESTRATED_LOOP] say_to_user (safe_mode): inconsistent task state, terminating");
+                        processed.orchestrator_complete = true;
+                    }
+                }
+            } else if is_safe_mode && batch_state.define_tasks_replaced_queue {
+                // Safe mode but define_tasks just created tasks in this batch — don't terminate
+                log::info!(
+                    "[ORCHESTRATED_LOOP] say_to_user (safe_mode): ignoring termination — define_tasks just replaced queue"
+                );
             } else if finished_task && !batch_state.define_tasks_replaced_queue && !batch_state.auto_completed_task {
                 if !orchestrator.task_queue_is_empty() {
                     // Complete current task and try to advance
@@ -2824,6 +2858,24 @@ impl MessageDispatcher {
                     continue;
                 }
 
+                // If there are pending tasks, don't exit — force the AI to keep working.
+                // The AI might respond with just text after a batched define_tasks + say_to_user,
+                // but we need it to continue executing tasks.
+                if !orchestrator.task_queue_is_empty() && !orchestrator.all_tasks_complete() {
+                    log::info!(
+                        "[ORCHESTRATED_LOOP] AI returned no tool calls but tasks are pending — forcing retry"
+                    );
+                    conversation.push(Message {
+                        role: MessageRole::Assistant,
+                        content: ai_response.content.clone(),
+                    });
+                    conversation.push(Message {
+                        role: MessageRole::User,
+                        content: "[SYSTEM] You have pending tasks to complete. Please call the appropriate tools to continue working on the current task.".to_string(),
+                    });
+                    continue;
+                }
+
                 // say_to_user content takes priority — it IS the final result
                 if !last_say_to_user_content.is_empty() {
                     log::info!("[ORCHESTRATED_LOOP] Returning say_to_user content as final result ({} chars)", last_say_to_user_content.len());
@@ -2913,8 +2965,12 @@ impl MessageDispatcher {
             }
 
             // say_to_user consecutive call detection: don't allow say_to_user twice in a row
+            // BUT: skip this check if there are pending tasks in the queue — the agent
+            // legitimately uses say_to_user between tasks and shouldn't be terminated.
             let current_iteration_has_say_to_user = ai_response.tool_calls.iter().any(|c| c.name == "say_to_user");
-            if current_iteration_has_say_to_user && previous_iteration_had_say_to_user {
+            if current_iteration_has_say_to_user && previous_iteration_had_say_to_user
+                && orchestrator.task_queue_is_empty()
+            {
                 log::warn!("[SAY_TO_USER_LOOP] Detected consecutive say_to_user calls, terminating loop");
                 // Don't set final_summary - the message was already broadcast via tool_result
                 orchestrator_complete = true;
@@ -2960,6 +3016,16 @@ impl MessageDispatcher {
                 } else {
                     ToolResponse::error(call.id.clone(), processed.result_content)
                 });
+            }
+
+            // If define_tasks just replaced the queue in this batch, any orchestrator_complete
+            // set by an earlier tool in the same batch (e.g., say_to_user that ran before
+            // define_tasks) is stale — reset it since there's new work to do.
+            if batch_state.define_tasks_replaced_queue && orchestrator_complete && !orchestrator.all_tasks_complete() {
+                log::info!(
+                    "[ORCHESTRATED_LOOP] Resetting orchestrator_complete — define_tasks created new tasks in this batch"
+                );
+                orchestrator_complete = false;
             }
 
             // Add to tool history (keep only last N entries to prevent context bloat)
@@ -3257,8 +3323,11 @@ impl MessageDispatcher {
                         }
 
                         // say_to_user consecutive call detection: don't allow say_to_user twice in a row
+                        // BUT: skip if there are pending tasks — agent legitimately uses say_to_user between tasks
                         let current_iteration_has_say_to_user = tool_call.tool_name == "say_to_user";
-                        if current_iteration_has_say_to_user && previous_iteration_had_say_to_user {
+                        if current_iteration_has_say_to_user && previous_iteration_had_say_to_user
+                            && orchestrator.task_queue_is_empty()
+                        {
                             log::warn!("[TEXT_SAY_TO_USER_LOOP] Detected consecutive say_to_user calls, terminating loop");
                             // Don't set final_response - the message was already broadcast via tool_result
                             orchestrator_complete = true;

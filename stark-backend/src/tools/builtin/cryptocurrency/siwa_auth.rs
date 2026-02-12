@@ -241,23 +241,14 @@ impl Tool for SiwaAuthTool {
 
         let address = wallet_provider.get_address();
 
-        // 2. Resolve agent_id and agent_registry
+        // 2. Resolve agent_id and agent_registry (optional — falls back to plain SIWE)
         let (agent_id, agent_registry) = resolve_agent_identity(
             &params,
             context,
         );
-        let agent_id = match agent_id {
-            Some(id) => id,
-            None => return ToolResult::error(
-                "No agent_id available. Provide it as a parameter or register an ERC-8004 identity first.",
-            ),
-        };
-        let agent_registry = match agent_registry {
-            Some(reg) => reg,
-            None => return ToolResult::error(
-                "No agent_registry available. Provide it as a parameter or register an ERC-8004 identity first.",
-            ),
-        };
+        if agent_id.is_none() || agent_registry.is_none() {
+            log::info!("[SIWA] No agent identity found — falling back to plain SIWE auth");
+        }
 
         let client = context.http_client();
         let server_url = params.server_url.trim_end_matches('/');
@@ -307,7 +298,7 @@ impl Tool for SiwaAuthTool {
             }
         };
 
-        // 4. Build SIWA message
+        // 4. Build SIWA message (or plain SIWE if no agent identity)
         let message = build_siwa_message(&SiwaMessageFields {
             domain: params.domain.clone(),
             address: address.clone(),
@@ -375,6 +366,7 @@ impl Tool for SiwaAuthTool {
         );
 
         // 8. Return success
+        let mode = if agent_id.is_some() { "SIWA" } else { "SIWE" };
         let metadata = json!({
             "server_url": server_url,
             "address": address,
@@ -382,19 +374,26 @@ impl Tool for SiwaAuthTool {
             "agent_registry": agent_registry,
             "chain_id": params.chain_id,
             "register": params.cache_as,
+            "mode": mode,
         });
 
+        let agent_line = match &agent_id {
+            Some(id) => format!("Agent ID: {}\n", id),
+            None => String::new(),
+        };
+
         ToolResult::success(format!(
-            "SIWA authentication successful.\n\
-             Address: {}\n\
-             Agent ID: {}\n\
-             Receipt stored in register: '{}'\n\n\
+            "{mode} authentication successful.\n\
+             Address: {address}\n\
+             {agent_line}\
+             Receipt stored in register: '{register}'\n\n\
              Use erc8128_fetch with header X-SIWA-Receipt to make authenticated requests.\n\n\
-             Server response: {}",
-            address,
-            agent_id,
-            params.cache_as,
-            if verify_text.len() > 2000 {
+             Server response: {response}",
+            mode = mode,
+            address = address,
+            agent_line = agent_line,
+            register = params.cache_as,
+            response = if verify_text.len() > 2000 {
                 format!("{}...", &verify_text[..2000])
             } else {
                 verify_text

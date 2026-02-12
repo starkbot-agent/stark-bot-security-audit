@@ -23,6 +23,7 @@ mod qmd_memory;
 mod scheduler;
 mod skills;
 mod tools;
+mod siwa;
 mod wallet;
 mod x402;
 mod erc8128;
@@ -66,6 +67,9 @@ pub struct AppState {
     /// Either EnvWalletProvider (Standard mode) or FlashWalletProvider (Flash mode)
     /// None if no wallet is configured (graceful degradation - shows warning on login page)
     pub wallet_provider: Option<Arc<dyn WalletProvider>>,
+    /// Handles for module background workers (keyed by module name).
+    /// Used for hot-reload: abort old worker, spawn new one without restart.
+    pub module_workers: Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 /// Auto-retrieve backup from keystore on fresh instance
@@ -252,7 +256,7 @@ async fn restore_backup_data(
     private_key: &str,
     encrypted_data: &str,
 ) -> Result<(usize, usize), String> {
-    let backup_data = keystore_client::decrypt_backup_data(private_key, encrypted_data)?;
+    let mut backup_data = keystore_client::decrypt_backup_data(private_key, encrypted_data)?;
 
     log::info!(
         "[Keystore] Restoring backup v{} with {} items from {}",
@@ -586,36 +590,56 @@ async fn restore_backup_data(
         }
     }
 
-    // Restore discord registrations
-    let mut restored_discord_registrations = 0;
-    if !backup_data.discord_registrations.is_empty() {
-        match discord_hooks::db::clear_registrations_for_restore(db) {
-            Ok(deleted) => {
-                log::info!("[Keystore] Cleared {} discord registrations for restore", deleted);
-            }
-            Err(e) => {
-                log::warn!("[Keystore] Failed to clear discord registrations for restore: {}", e);
-            }
+    // Restore module data (generic module restore)
+    {
+        let module_registry = modules::ModuleRegistry::new();
+
+        // Backward-compat shim: convert legacy discord_registrations to module_data format
+        if !backup_data.discord_registrations.is_empty() && !backup_data.module_data.contains_key("discord_tipping") {
+            log::info!("[Keystore] Converting legacy discord_registrations to module_data format");
+            let legacy_entries: Vec<serde_json::Value> = backup_data.discord_registrations.iter().map(|reg| {
+                serde_json::json!({
+                    "discord_user_id": reg.discord_user_id,
+                    "discord_username": reg.discord_username,
+                    "public_address": reg.public_address,
+                    "registered_at": reg.registered_at,
+                })
+            }).collect();
+            backup_data.module_data.insert("discord_tipping".to_string(), serde_json::Value::Array(legacy_entries));
         }
 
-        for reg in &backup_data.discord_registrations {
-            let username = reg.discord_username.as_deref().unwrap_or("unknown");
-            match discord_hooks::db::get_or_create_profile(db, &reg.discord_user_id, username) {
-                Ok(_) => {
-                    if let Err(e) = discord_hooks::db::register_address(db, &reg.discord_user_id, &reg.public_address) {
-                        log::warn!("[Keystore] Failed to restore discord registration for {}: {}", reg.discord_user_id, e);
-                    } else {
-                        restored_discord_registrations += 1;
+        for (module_name, data) in &backup_data.module_data {
+            if let Some(module) = module_registry.get(module_name) {
+                // Ensure tables exist
+                if module.has_db_tables() {
+                    let conn = db.conn();
+                    if let Err(e) = module.init_tables(&conn) {
+                        log::warn!("[Keystore] Failed to init tables for module '{}': {}", module_name, e);
+                        continue;
                     }
                 }
-                Err(e) => {
-                    log::warn!("[Keystore] Failed to create discord profile for {}: {}", reg.discord_user_id, e);
+                // Auto-install if not already installed
+                if !db.is_module_installed(module_name).unwrap_or(true) {
+                    let required_keys = module.required_api_keys();
+                    let key_strs: Vec<&str> = required_keys.iter().copied().collect();
+                    let _ = db.install_module(
+                        module_name,
+                        module.description(),
+                        module.version(),
+                        module.has_db_tables(),
+                        module.has_tools(),
+                        module.has_worker(),
+                        &key_strs,
+                    );
                 }
+                match module.restore_data(db, data) {
+                    Ok(()) => log::info!("[Keystore] Restored module data for '{}'", module_name),
+                    Err(e) => log::warn!("[Keystore] Failed to restore module data for '{}': {}", module_name, e),
+                }
+            } else {
+                log::warn!("[Keystore] Skipping restore for unknown module '{}'", module_name);
             }
         }
-    }
-    if restored_discord_registrations > 0 {
-        log::info!("[Keystore] Restored {} discord registrations", restored_discord_registrations);
     }
 
     // Restore skills (version-aware: won't downgrade bundled skills that have newer versions on disk)
@@ -792,6 +816,39 @@ async fn main() -> std::io::Result<()> {
     // Initialize Module Registry (compile-time plugin registry)
     let module_registry = modules::ModuleRegistry::new();
 
+    // Auto-migration: if discord_user_profiles table exists but discord_tipping module
+    // is not installed, auto-install it so existing deployments keep tipping on upgrade.
+    {
+        let conn = db.conn();
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='discord_user_profiles'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+
+        if table_exists && !db.is_module_installed("discord_tipping").unwrap_or(true) {
+            log::info!("[MODULE] Auto-migrating: discord_user_profiles table found, installing discord_tipping module");
+            if let Some(module) = module_registry.get("discord_tipping") {
+                let required_keys = module.required_api_keys();
+                let key_strs: Vec<&str> = required_keys.iter().copied().collect();
+                match db.install_module(
+                    "discord_tipping",
+                    module.description(),
+                    module.version(),
+                    module.has_db_tables(),
+                    module.has_tools(),
+                    module.has_worker(),
+                    &key_strs,
+                ) {
+                    Ok(_) => log::info!("[MODULE] Auto-installed discord_tipping module (migration from hardcoded table)"),
+                    Err(e) => log::warn!("[MODULE] Failed to auto-install discord_tipping: {}", e),
+                }
+            }
+        }
+    }
+
     // Initialize Tool Registry with built-in tools + installed module tools
     log::info!("Initializing tool registry");
     let mut tool_registry_mut = tools::create_default_registry();
@@ -956,12 +1013,17 @@ async fn main() -> std::io::Result<()> {
         scheduler_handle.start(scheduler_shutdown_rx).await;
     });
 
-    // Spawn workers for installed & enabled modules
-    for entry in &installed_modules {
-        if entry.enabled {
-            if let Some(module) = module_registry.get(&entry.module_name) {
-                if let Some(_handle) = module.spawn_worker(db.clone(), broadcaster.clone(), dispatcher.clone()) {
-                    log::info!("[MODULE] Started worker for: {}", entry.module_name);
+    // Spawn workers for installed & enabled modules (track handles for hot-reload)
+    let module_workers = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<String, tokio::task::JoinHandle<()>>::new()));
+    {
+        let mut workers = module_workers.lock().await;
+        for entry in &installed_modules {
+            if entry.enabled {
+                if let Some(module) = module_registry.get(&entry.module_name) {
+                    if let Some(handle) = module.spawn_worker(db.clone(), broadcaster.clone(), dispatcher.clone()) {
+                        log::info!("[MODULE] Started worker for: {}", entry.module_name);
+                        workers.insert(entry.module_name.clone(), handle);
+                    }
                 }
             }
         }
@@ -1008,6 +1070,7 @@ async fn main() -> std::io::Result<()> {
     let tx_q = tx_queue.clone();
     let safe_mode_rl = safe_mode_rate_limiter.clone();
     let wallet_prov = wallet_provider.clone();
+    let mod_workers = module_workers.clone();
     let frontend_dist = frontend_dist.to_string();
     let dev_mode = dev_mode;
 
@@ -1034,6 +1097,7 @@ async fn main() -> std::io::Result<()> {
                 tx_queue: Arc::clone(&tx_q),
                 safe_mode_rate_limiter: safe_mode_rl.clone(),
                 wallet_provider: wallet_prov.clone(),
+                module_workers: Arc::clone(&mod_workers),
             }))
             .app_data(web::Data::new(Arc::clone(&sched)))
             // WebSocket data for /ws route

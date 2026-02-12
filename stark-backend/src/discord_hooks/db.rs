@@ -211,6 +211,40 @@ pub fn list_registered_profiles(db: &Database) -> Result<Vec<DiscordUserProfile>
     Ok(profiles)
 }
 
+/// List all profiles (registered and unregistered) — used for module dashboard
+pub fn list_all_profiles(db: &Database) -> Result<Vec<DiscordUserProfile>, String> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, discord_user_id, discord_username, public_address,
+                    registration_status, registered_at, last_interaction_at,
+                    created_at, updated_at
+             FROM discord_user_profiles
+             ORDER BY updated_at DESC",
+        )
+        .map_err(|e| format!("Failed to prepare query: {}", e))?;
+
+    let profiles = stmt
+        .query_map([], |row| {
+            Ok(DiscordUserProfile {
+                id: row.get(0)?,
+                discord_user_id: row.get(1)?,
+                discord_username: row.get(2)?,
+                public_address: row.get(3)?,
+                registration_status: row.get(4)?,
+                registered_at: row.get(5)?,
+                last_interaction_at: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query profiles: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect profiles: {}", e))?;
+
+    Ok(profiles)
+}
+
 /// Clear all discord user registrations (for restore)
 pub fn clear_registrations_for_restore(db: &Database) -> Result<usize, String> {
     let conn = db.conn();

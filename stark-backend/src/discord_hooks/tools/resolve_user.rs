@@ -221,6 +221,8 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_user_sets_recipient_register() {
         let db = std::sync::Arc::new(crate::db::Database::new(":memory:").unwrap());
+        // Init tables explicitly (no longer in base DB init — owned by discord_tipping module)
+        crate::discord_hooks::db::init_tables(&db.conn()).unwrap();
         // Create + register a Discord profile
         crate::discord_hooks::db::get_or_create_profile(&db, "111222333", "TestUser").unwrap();
         crate::discord_hooks::db::register_address(

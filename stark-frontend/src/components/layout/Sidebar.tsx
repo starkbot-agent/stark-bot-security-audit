@@ -122,7 +122,7 @@ export default function Sidebar() {
           <NavItem to="/mindmap" icon={Network} label="Mind Map" />
           <NavItem to="/kanban" icon={Columns} label="Kanban Board" />
           <NavItem to="/identities" icon={Users} label="Identities" />
-          <NavItem to="/files" icon={FolderOpen} label="Files" />
+          <NavItem to="/files" icon={FolderOpen} label="Workspace Files" />
           <NavItem to="/system-files" icon={Sparkles} label="System Files" />
           <NavItem to="/journal" icon={BookOpen} label="Journal" />
         </div>

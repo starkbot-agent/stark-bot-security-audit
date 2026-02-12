@@ -11,6 +11,7 @@ use crate::tools::builtin::cryptocurrency::wallet_monitor::{
 };
 use crate::tools::registry::Tool;
 use rusqlite::Connection;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub struct WalletMonitorModule;
@@ -69,6 +70,53 @@ impl super::Module for WalletMonitorModule {
 
     fn skill_content(&self) -> Option<&'static str> {
         Some(WALLET_MONITOR_SKILL)
+    }
+
+    fn has_dashboard(&self) -> bool {
+        true
+    }
+
+    fn dashboard_data(&self, db: &Database) -> Option<Value> {
+        let watchlist = db.list_watchlist().ok()?;
+        let stats = db.get_activity_stats().ok()?;
+        let recent = db.query_activity(&crate::db::tables::wallet_monitor::ActivityFilter {
+            limit: Some(10),
+            ..Default::default()
+        }).ok()?;
+
+        let watchlist_json: Vec<Value> = watchlist.iter().map(|w| {
+            json!({
+                "id": w.id,
+                "address": w.address,
+                "label": w.label,
+                "chain": w.chain,
+                "monitor_enabled": w.monitor_enabled,
+                "large_trade_threshold_usd": w.large_trade_threshold_usd,
+                "last_checked_at": w.last_checked_at,
+            })
+        }).collect();
+
+        let recent_activity_json: Vec<Value> = recent.iter().map(|a| {
+            json!({
+                "chain": a.chain,
+                "tx_hash": a.tx_hash,
+                "activity_type": a.activity_type,
+                "usd_value": a.usd_value,
+                "asset_symbol": a.asset_symbol,
+                "amount_formatted": a.amount_formatted,
+                "is_large_trade": a.is_large_trade,
+                "created_at": a.created_at,
+            })
+        }).collect();
+
+        Some(json!({
+            "watched_wallets": stats.watched_wallets,
+            "active_wallets": stats.active_wallets,
+            "total_transactions": stats.total_transactions,
+            "large_trades": stats.large_trades,
+            "watchlist": watchlist_json,
+            "recent_activity": recent_activity_json,
+        }))
     }
 }
 

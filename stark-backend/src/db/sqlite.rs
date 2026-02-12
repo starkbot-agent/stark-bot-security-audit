@@ -897,6 +897,21 @@ impl Database {
             [],
         )?;
 
+        // Migration: drop old agent_identity table if it has the legacy wallet_address column
+        {
+            let has_wallet_col: bool = conn
+                .prepare("PRAGMA table_info(agent_identity)")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| row.get::<_, String>(1))
+                        .map(|rows| rows.filter_map(|r| r.ok()).any(|name| name == "wallet_address"))
+                })
+                .unwrap_or(false);
+            if has_wallet_col {
+                log::info!("[db] Dropping legacy agent_identity table (has wallet_address column)");
+                let _ = conn.execute("DROP TABLE agent_identity", []);
+            }
+        }
+
         // Agent identity (our EIP-8004 registration — minimal: just the NFT ID + registry + chain)
         // Everything else (name, description, URI, wallet, etc.) is fetched dynamically from chain.
         conn.execute(
@@ -1194,8 +1209,8 @@ impl Database {
             [],
         )?;
 
-        // Initialize discord_hooks tables
-        crate::discord_hooks::db::init_tables(&conn)?;
+        // NOTE: discord_user_profiles table is now owned by the discord_tipping module.
+        // It gets created when the module is installed (init_tables).
 
         // Twitter processed mentions table - track which tweets we've already responded to
         conn.execute(

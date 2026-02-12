@@ -35,7 +35,7 @@ pub use core::{
 pub use cryptocurrency::{
     load_networks, load_tokens, BridgeUsdcTool, BroadcastWeb3TxTool, DecodeCalldataTool,
     DexScreenerTool, Erc8128FetchTool, GeckoTerminalTool, ListQueuedWeb3TxTool, PolymarketTradeTool,
-    SelectWeb3NetworkTool, SendEthTool, SetAddressTool, ToRawAmountTool, TokenLookupTool,
+    SelectWeb3NetworkTool, SendEthTool, SetAddressTool, SiwaAuthTool, ToRawAmountTool, TokenLookupTool,
     VerifyTxBroadcastTool, WalletActivityTool, WalletMonitorControlTool, WalletWatchlistTool,
     Web3PresetFunctionCallTool, X402AgentInvokeTool, X402FetchTool,
     X402PostTool, X402RpcTool,

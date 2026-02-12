@@ -3,6 +3,7 @@
 //! Modules are optional features that can be installed on demand.
 //! Each module can provide database tables, tools, and background workers.
 
+pub mod discord_tipping;
 pub mod registry;
 pub mod wallet_monitor;
 
@@ -11,6 +12,7 @@ use crate::db::Database;
 use crate::gateway::events::EventBroadcaster;
 use crate::tools::registry::Tool;
 use rusqlite::Connection;
+use serde_json::Value;
 use std::sync::Arc;
 
 pub use registry::ModuleRegistry;
@@ -49,5 +51,25 @@ pub trait Module: Send + Sync {
     /// Optional: skill markdown content to install
     fn skill_content(&self) -> Option<&'static str> {
         None
+    }
+
+    /// Whether this module has a dashboard UI
+    fn has_dashboard(&self) -> bool {
+        false
+    }
+
+    /// Return dashboard data as JSON (module-specific)
+    fn dashboard_data(&self, _db: &Database) -> Option<Value> {
+        None
+    }
+
+    /// Return data to include in cloud backup (module-specific)
+    fn backup_data(&self, _db: &Database) -> Option<Value> {
+        None
+    }
+
+    /// Restore module data from a cloud backup
+    fn restore_data(&self, _db: &Database, _data: &Value) -> Result<(), String> {
+        Ok(())
     }
 }

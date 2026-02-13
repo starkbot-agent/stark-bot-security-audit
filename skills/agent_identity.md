@@ -1,11 +1,11 @@
 ---
 name: agent_identity
-description: "Create, manage, and publish your EIP-8004 agent identity registration file"
-version: 1.2.3
+description: "Create, import, and register your EIP-8004 agent identity"
+version: 2.3.0
 author: starkbot
 homepage: https://eips.ethereum.org/EIPS/eip-8004
 tags: [crypto, identity, eip8004, registration, agent, discovery, nft]
-requires_tools: [modify_identity, import_identity, x402_rpc, web3_preset_function_call]
+requires_tools: [import_identity, register_new_identity, x402_rpc, web3_preset_function_call]
 arguments:
   agent_name:
     description: "Name for the agent identity"
@@ -20,7 +20,7 @@ arguments:
 
 # EIP-8004 Agent Identity Management
 
-Manage your on-chain agent identity using the EIP-8004 standard. This covers creating your identity file, updating it, adding services, publishing it, and registering on-chain via the **StarkLicense** contract on Base.
+Manage your on-chain agent identity using the EIP-8004 standard.
 
 **Contract:** `0xa23a42D266653846e05d8f356a52298844537472` (Base mainnet, UUPS proxy)
 **Payment token:** STARKBOT (`0x587Cd533F418825521f3A1daa7CCd1E7339A1B07`)
@@ -28,102 +28,51 @@ Manage your on-chain agent identity using the EIP-8004 standard. This covers cre
 
 ---
 
-## 1. Creating Your Identity File
+## IMPORTANT: Import vs Create vs Read
 
-Create a new IDENTITY.json file with your agent name and description:
+- **"what is my identity?"** → use `import_identity` with NO params (returns existing DB identity)
+- **"import my identity" or has an NFT** → use `import_identity` (with `agent_id` if known — forces on-chain import)
+- **"create a new identity from scratch"** → use `register_new_identity`
+- **NEVER** use `register_new_identity` when the user asks to import an existing NFT
 
-```tool:modify_identity
-action: create
+## 1. Reading Your Identity
+
+Call `import_identity` with no parameters. If identity exists in the DB, it returns it immediately without going on-chain:
+
+```tool:import_identity
+```
+
+This is the correct tool for "what is my identity?", "show my agent info", or any read operation.
+
+## 2. Importing an Existing Identity (from on-chain)
+
+If you need to import/re-import from on-chain, provide the `agent_id`:
+
+```tool:import_identity
+agent_id: 5
+```
+
+This forces an on-chain lookup: verifies ownership, fetches the agent URI, persists the agent_id locally, and sets the `agent_id` register so you can immediately use on-chain presets.
+
+To auto-discover when no identity is in the DB yet, call with no params — it will scan your wallet via `balanceOf + tokenOfOwnerByIndex`.
+
+## 2. Creating a New Identity (from scratch)
+
+Only use this if the user does NOT have an existing NFT and wants to create a brand-new identity:
+
+```tool:register_new_identity
 name: <your agent name>
 description: <brief description of what your agent does>
 image: <optional image URL>
 ```
 
-This creates `IDENTITY.json` in the soul/ directory with:
+This creates the identity in the database with:
 - EIP-8004 registration type URL
 - x402 support enabled by default
 - Active status set to true
 - Default trust types: reputation, x402-payments
 
-## 2. Importing an Existing Identity
-
-If you already have an agent identity NFT (e.g. transferred from another wallet or received from someone), import it instead of creating a new one:
-
-### Import a specific agent ID
-
-```tool:import_identity
-agent_id: 1
-```
-
-### Auto-discover your identity NFTs
-
-If you don't know your agent ID, omit it and the tool will scan your wallet:
-
-```tool:import_identity
-```
-
-This verifies ownership on-chain, fetches the agent URI, persists the agent_id locally, and sets the `agent_id` register so you can immediately use on-chain presets like `identity_get_uri`, `identity_owner_of`, etc.
-
-## 3. Reading Your Identity
-
-View the current contents of your identity file:
-
-```tool:modify_identity
-action: read
-```
-
-## 4. Updating Fields
-
-Update individual fields in your identity:
-
-```tool:modify_identity
-action: update_field
-field: name
-value: <new name>
-```
-
-Supported fields: `name`, `description`, `image`, `active`
-
-## 5. Managing Services
-
-### Add a Service
-
-Register a service endpoint that your agent provides:
-
-```tool:modify_identity
-action: add_service
-service_name: <service type, e.g. "mcp", "a2a", "chat", "x402", "swap">
-service_endpoint: <full URL to service endpoint>
-service_version: <version string, default "1.0">
-```
-
-Common service types:
-- `mcp` — Model Context Protocol server
-- `a2a` — Agent-to-Agent protocol
-- `chat` — Chat/conversation endpoint
-- `x402` — x402 payment-enabled endpoint
-- `swap` — Token swap service
-
-### Remove a Service
-
-```tool:modify_identity
-action: remove_service
-service_name: <name of service to remove>
-```
-
-## 6. Publishing to identity.defirelay.com
-
-Upload your identity file to the hosted identity registry. This costs up to 1000 STARKBOT via x402 payment.
-
-```tool:modify_identity
-action: upload
-```
-
-The server returns a hosted URL where your identity file can be accessed by other agents and registries. **Save this URL** — you'll need it for on-chain registration.
-
-> **IMPORTANT:** If the upload fails for ANY reason (connection error, server down, payment failure), you MUST stop and report the error to the user. Do NOT proceed with on-chain registration without a successful upload — the registration requires a valid hosted URL.
-
-## 7. On-Chain Registration (Base)
+## 3. On-Chain Registration (Base)
 
 Registration on the StarkLicense contract mints an ERC-721 NFT that represents your agent identity. It costs 1000 STARKBOT (burned, not held).
 
@@ -143,7 +92,7 @@ preset: identity_register
 network: base
 ```
 
-> Before calling, set the `agent_uri` register to the URL returned from step 5 (upload).
+> Before calling, set the `agent_uri` register to the URL returned from upload.
 
 This mints an NFT and returns your `agentId`. The `Registered` event is emitted with your agentId, URI, and owner address.
 
@@ -158,7 +107,7 @@ network: base
 
 Then set the URI later with `identity_set_uri`.
 
-## 8. Managing On-Chain Identity
+## 4. Managing On-Chain Identity
 
 ### Update Agent URI
 
@@ -198,7 +147,7 @@ network: base
 
 Set `agent_id` and `metadata_key` registers first.
 
-## 9. Querying the Registry
+## 5. Querying the Registry
 
 ### Check registration fee
 
@@ -266,18 +215,15 @@ The IDENTITY.json file follows the EIP-8004 registration file schema:
 
 ## Full Workflow Summary
 
-### New Identity
-1. **Create** your identity with `modify_identity` action=create
-2. **Add services** as you deploy endpoints
-3. **Upload** to identity.defirelay.com (`modify_identity` action=upload, x402 payment)
-4. **Approve** 1000 STARKBOT → `identity_approve_registry` preset
-5. **Register** on-chain → `identity_register` preset (mints NFT, burns STARKBOT)
-6. **Update** fields and URI as your agent evolves
-
-### Import Existing Identity
+### Import Existing Identity (recommended)
 1. **Import** with `import_identity` (with or without specific agent_id)
 2. Tool verifies ownership, fetches URI, persists locally, sets `agent_id` register
 3. You can now query/update the identity using on-chain presets
+
+### New Identity (from scratch)
+1. **Create** your identity with `register_new_identity`
+2. **Approve** 1000 STARKBOT → `identity_approve_registry` preset
+3. **Register** on-chain → `identity_register` preset (mints NFT, burns STARKBOT)
 
 ## Available Presets
 

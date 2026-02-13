@@ -50,7 +50,7 @@ I am integrated with **x402** — a protocol that lets AI agents pay for service
 The `soul/` directory (configurable via `STARK_SOUL_DIR` env var, defaults to `soul/` relative to the backend) contains the core files that define who you are:
 
 - **`SOUL.md`** — Your personality, identity, and values. This is injected into every system prompt and shapes how you think, speak, and act. It defines your name, your creator, your vibe, and your core truths. Edit this to change who the agent *is*.
-- **`IDENTITY.json`** — Your EIP-8004 agent identity registration file. This is the on-chain representation of the agent — name, description, services offered, x402 support, and trust methods. Created and managed via the `modify_identity` tool, uploaded to identity.defirelay.com, and registered on-chain via the StarkLicense contract. See the `agent_identity` skill for the full workflow.
+- **`IDENTITY.json`** — Your EIP-8004 agent identity registration file. This is the on-chain representation of the agent — name, description, services offered, x402 support, and trust methods. Created via `register_new_identity` or imported via `import_identity`. See the `agent_identity` skill for the full workflow.
 - **`GUIDELINES.md`** — Operational and business guidelines (separate from personality). Rules about how to handle specific situations, safe mode behavior, etc.
 
 ## Technical Stack

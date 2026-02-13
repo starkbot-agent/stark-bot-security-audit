@@ -954,38 +954,25 @@ async fn backup_to_cloud(state: web::Data<AppState>, req: HttpRequest) -> impl R
         }
     }
 
-    // Get identity document content
-    let identity_path = crate::config::identity_document_path();
-    match std::fs::read_to_string(&identity_path) {
-        Ok(content) => {
-            backup.identity_document = Some(content);
-            log::info!("Including identity document in backup");
-        }
-        Err(e) => {
-            log::debug!("Identity document not found for backup: {}", e);
-        }
-    }
-
-    // Get on-chain agent identity registration (NFT token ID + registry + chain)
-    {
-        let conn = state.db.conn();
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT agent_id, agent_registry, chain_id FROM agent_identity LIMIT 1",
-        ) {
-            if let Ok(Some(entry)) = stmt.query_row([], |row| {
-                Ok(Some(AgentIdentityEntry {
-                    agent_id: row.get(0)?,
-                    agent_registry: row.get(1)?,
-                    chain_id: row.get(2)?,
-                }))
-            }) {
-                log::info!(
-                    "Including agent identity (agent_id={}) in backup",
-                    entry.agent_id
-                );
-                backup.agent_identity = Some(entry);
-            }
-        }
+    // Get agent identity from DB (single source of truth — no more IDENTITY.json)
+    if let Some(row) = state.db.get_agent_identity_full() {
+        log::info!(
+            "Including agent identity (agent_id={}) in backup",
+            row.agent_id
+        );
+        backup.agent_identity = Some(AgentIdentityEntry {
+            agent_id: row.agent_id,
+            agent_registry: row.agent_registry,
+            chain_id: row.chain_id,
+            name: row.name,
+            description: row.description,
+            image: row.image,
+            x402_support: row.x402_support,
+            active: row.active,
+            services_json: row.services_json,
+            supported_trust_json: row.supported_trust_json,
+            registration_uri: row.registration_uri,
+        });
     }
 
     // Collect backup data from installed modules (generic module backup)
@@ -1767,42 +1754,30 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
         }
     }
 
-    // Restore identity document if present in backup AND no local copy exists
+    // Restore agent identity from backup (DB is single source of truth)
     let mut has_identity = false;
-    if let Some(identity_content) = &backup_data.identity_document {
-        let identity_path = crate::config::identity_document_path();
-        if identity_path.exists() {
-            has_identity = true;
-            log::info!("[Keystore] Identity document already exists locally, skipping restore from backup");
-        } else {
-            if let Some(parent) = identity_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            match std::fs::write(&identity_path, identity_content) {
-                Ok(_) => {
-                    has_identity = true;
-                    log::info!("[Keystore] Restored identity document from backup");
-                }
-                Err(e) => {
-                    log::warn!("[Keystore] Failed to restore identity document: {}", e);
-                }
-            }
-        }
-    }
-
-    // Restore on-chain agent identity registration if present and no local row exists
     if let Some(ref ai) = backup_data.agent_identity {
         let conn = state.db.conn();
         let existing: i64 = conn
             .query_row("SELECT COUNT(*) FROM agent_identity", [], |r| r.get(0))
             .unwrap_or(0);
         if existing == 0 {
-            match conn.execute(
-                "INSERT INTO agent_identity (agent_id, agent_registry, chain_id) \
-                 VALUES (?1, ?2, ?3)",
-                rusqlite::params![ai.agent_id, ai.agent_registry, ai.chain_id],
+            // Use full metadata from backup entry
+            match state.db.upsert_agent_identity(
+                ai.agent_id,
+                &ai.agent_registry,
+                ai.chain_id,
+                ai.name.as_deref(),
+                ai.description.as_deref(),
+                ai.image.as_deref(),
+                ai.x402_support,
+                ai.active,
+                &ai.services_json,
+                &ai.supported_trust_json,
+                ai.registration_uri.as_deref(),
             ) {
                 Ok(_) => {
+                    has_identity = true;
                     log::info!(
                         "[Keystore] Restored agent identity (agent_id={}) from backup",
                         ai.agent_id
@@ -1813,7 +1788,39 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
                 }
             }
         } else {
+            has_identity = true;
             log::info!("[Keystore] Agent identity already exists locally, skipping restore from backup");
+        }
+    }
+
+    // Legacy: if old backup has identity_document but no agent_identity entry,
+    // and no DB row exists, parse the JSON and create a minimal DB row
+    if !has_identity {
+        if let Some(identity_content) = &backup_data.identity_document {
+            let existing: i64 = state.db.conn()
+                .query_row("SELECT COUNT(*) FROM agent_identity", [], |r| r.get(0))
+                .unwrap_or(0);
+            if existing == 0 {
+                if let Ok(reg) = serde_json::from_str::<crate::eip8004::types::RegistrationFile>(identity_content) {
+                    let services_json = serde_json::to_string(&reg.services).unwrap_or_else(|_| "[]".to_string());
+                    let supported_trust_json = serde_json::to_string(&reg.supported_trust).unwrap_or_else(|_| "[]".to_string());
+                    match state.db.upsert_agent_identity(
+                        0, "", 0,
+                        Some(&reg.name), Some(&reg.description), reg.image.as_deref(),
+                        reg.x402_support, reg.active,
+                        &services_json, &supported_trust_json,
+                        None,
+                    ) {
+                        Ok(_) => {
+                            has_identity = true;
+                            log::info!("[Keystore] Migrated legacy identity_document to DB");
+                        }
+                        Err(e) => {
+                            log::warn!("[Keystore] Failed to migrate legacy identity_document: {}", e);
+                        }
+                    }
+                }
+            }
         }
     }
 

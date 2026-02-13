@@ -10,11 +10,13 @@ import {
   Lock,
   Sparkles,
   ClipboardList,
+  Trash2,
 } from 'lucide-react';
 import {
   listIntrinsicFiles,
   readIntrinsicFile,
   writeIntrinsicFile,
+  deleteIntrinsicFile,
   IntrinsicFileInfo,
 } from '@/lib/api';
 
@@ -30,6 +32,7 @@ export default function SystemFiles() {
   const [isEditing, setIsEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   const loadFiles = async () => {
@@ -87,6 +90,31 @@ export default function SystemFiles() {
       setFileError('Failed to save file');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selectedFile) return;
+    const file = files.find(f => f.name === selectedFile);
+    if (!file?.deletable) return;
+    if (!confirm(`Delete ${selectedFile}?`)) return;
+
+    setIsDeleting(true);
+    setFileError(null);
+    try {
+      const response = await deleteIntrinsicFile(selectedFile);
+      if (response.success) {
+        setFileContent(null);
+        setSelectedFile(null);
+        setIsEditing(false);
+        setSaveMessage(null);
+      } else {
+        setFileError(response.error || 'Failed to delete file');
+      }
+    } catch {
+      setFileError('Failed to delete file');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -224,6 +252,20 @@ export default function SystemFiles() {
                     >
                       <Edit2 className="w-4 h-4" />
                       Edit
+                    </button>
+                  )}
+                  {!isEditing && selectedFile && files.find(f => f.name === selectedFile)?.deletable && (
+                    <button
+                      onClick={handleDelete}
+                      disabled={isDeleting}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      {isDeleting ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                      Delete
                     </button>
                   )}
                   {isEditing && (

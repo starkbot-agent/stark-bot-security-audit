@@ -127,7 +127,7 @@ async fn get_config(state: web::Data<AppState>, req: HttpRequest) -> impl Respon
 // Identity Endpoints
 // =====================================================
 
-/// Get our agent's identity (fetches metadata dynamically from chain + metadata URL)
+/// Get our agent's identity (reads metadata from DB, optionally enriches with on-chain data)
 async fn get_our_identity(
     state: web::Data<AppState>,
     req: HttpRequest,
@@ -136,120 +136,13 @@ async fn get_our_identity(
         return resp;
     }
 
-    let conn = state.db.conn();
+    let config = Eip8004Config::from_env();
 
-    // Check if we have a stored agent_id (minimal: just NFT ID + registry + chain)
-    let row = conn.query_row(
-        "SELECT agent_id, agent_registry, chain_id FROM agent_identity ORDER BY id DESC LIMIT 1",
-        [],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        },
-    );
-
-    match row {
-        Ok((agent_id, agent_registry, chain_id)) => {
-            let config = Eip8004Config::from_env();
-
-            if !config.is_identity_deployed() {
-                return HttpResponse::Ok().json(serde_json::json!({
-                    "success": true,
-                    "registered": true,
-                    "identity": {
-                        "agent_id": agent_id,
-                        "agent_registry": agent_registry,
-                        "chain_id": chain_id,
-                    },
-                    "error": "Identity Registry not deployed — cannot fetch on-chain data"
-                }));
-            }
-
-            // Fetch everything dynamically from chain
-            let registry = if let Some(ref wp) = state.wallet_provider {
-                IdentityRegistry::new_with_wallet_provider(config.clone(), wp.clone())
-            } else {
-                IdentityRegistry::new(config.clone())
-            };
-
-            let mut name: Option<String> = None;
-            let mut description: Option<String> = None;
-            let mut image: Option<String> = None;
-            let mut registration_uri: Option<String> = None;
-            let mut is_active = true;
-            let mut wallet_address = String::new();
-            let mut owner_address = String::new();
-            let mut x402_support = false;
-            let mut services = serde_json::json!([]);
-            let mut fetch_errors: Vec<String> = Vec::new();
-
-            // Fetch URI from contract, then metadata from that URL
-            match registry.get_agent_uri(agent_id as u64).await {
-                Ok(uri) => {
-                    registration_uri = Some(uri.clone());
-                    match registry.fetch_registration(&uri).await {
-                        Ok(reg) => {
-                            name = Some(reg.name);
-                            description = Some(reg.description);
-                            image = reg.image;
-                            is_active = reg.active;
-                            x402_support = reg.x402_support;
-                            services = serde_json::to_value(&reg.services).unwrap_or(serde_json::json!([]));
-                        }
-                        Err(e) => fetch_errors.push(format!("metadata fetch: {}", e)),
-                    }
-                }
-                Err(e) => fetch_errors.push(format!("agentURI: {}", e)),
-            }
-
-            // Get owner from contract
-            match registry.get_owner(agent_id as u64).await {
-                Ok(o) => owner_address = o,
-                Err(e) => fetch_errors.push(format!("owner: {}", e)),
-            }
-
-            // Get wallet from contract
-            match registry.get_agent_wallet(agent_id as u64).await {
-                Ok(w) => wallet_address = w,
-                Err(e) => fetch_errors.push(format!("wallet: {}", e)),
-            }
-
-            if !fetch_errors.is_empty() {
-                log::warn!("[eip8004/identity] Fetch errors for agent_id={}: {:?}", agent_id, fetch_errors);
-            }
-
-            let mut resp = serde_json::json!({
-                "success": true,
-                "registered": true,
-                "identity": {
-                    "agent_id": agent_id,
-                    "agent_registry": agent_registry,
-                    "chain_id": chain_id,
-                    "name": name,
-                    "description": description,
-                    "image": image,
-                    "registration_uri": registration_uri,
-                    "wallet_address": wallet_address,
-                    "owner_address": owner_address,
-                    "is_active": is_active,
-                    "x402_support": x402_support,
-                    "services": services,
-                }
-            });
-
-            if !fetch_errors.is_empty() {
-                resp["fetch_errors"] = serde_json::json!(fetch_errors);
-            }
-
-            HttpResponse::Ok().json(resp)
-        }
-        Err(_) => {
-            // Not registered yet
-            let config = Eip8004Config::from_env();
-            HttpResponse::Ok().json(serde_json::json!({
+    // Read identity from DB (single source of truth)
+    let row = match state.db.get_agent_identity_full() {
+        Some(r) => r,
+        None => {
+            return HttpResponse::Ok().json(serde_json::json!({
                 "success": true,
                 "registered": false,
                 "config": {
@@ -257,9 +150,90 @@ async fn get_our_identity(
                     "identity_registry": config.identity_registry,
                     "deployed": config.is_identity_deployed()
                 }
-            }))
+            }));
+        }
+    };
+
+    let agent_id = row.agent_id;
+    let agent_registry = row.agent_registry.clone();
+    let chain_id = row.chain_id;
+    let name = row.name.clone();
+    let description = row.description.clone();
+    let image = row.image.clone();
+    let is_active = row.active;
+    let x402_support = row.x402_support;
+    let registration_uri = row.registration_uri.clone();
+    let services: serde_json::Value = serde_json::from_str(&row.services_json).unwrap_or(serde_json::json!([]));
+
+    // On-chain enrichment (wallet_address, owner_address) — optional, only if registry is deployed
+    let mut wallet_address = String::new();
+    let mut owner_address = String::new();
+    let mut fetch_errors: Vec<String> = Vec::new();
+
+    if agent_id > 0 && config.is_identity_deployed() {
+        let registry = if let Some(ref wp) = state.wallet_provider {
+            IdentityRegistry::new_with_wallet_provider(config.clone(), wp.clone())
+        } else {
+            IdentityRegistry::new(config.clone())
+        };
+
+        match registry.get_owner(agent_id as u64).await {
+            Ok(o) => owner_address = o,
+            Err(e) => fetch_errors.push(format!("owner: {}", e)),
+        }
+
+        match registry.get_agent_wallet(agent_id as u64).await {
+            Ok(w) => wallet_address = w,
+            Err(e) => fetch_errors.push(format!("wallet: {}", e)),
+        }
+
+        if !fetch_errors.is_empty() {
+            log::warn!("[eip8004/identity] Fetch errors for agent_id={}: {:?}", agent_id, fetch_errors);
         }
     }
+
+    let registered = agent_id > 0 && !agent_registry.is_empty();
+    let local_identity = !registered && (name.is_some() || description.is_some());
+
+    // Use config chain_id for display when DB has chain_id=0 (local-only identity)
+    let display_chain_id = if chain_id > 0 { chain_id } else { config.chain_id as i64 };
+    let display_registry = if agent_registry.is_empty() {
+        format!("{:?}", config.identity_registry)
+    } else {
+        agent_registry.clone()
+    };
+
+    let mut resp = serde_json::json!({
+        "success": true,
+        "registered": registered,
+        "local_identity": local_identity,
+        "identity": {
+            "agent_id": if agent_id > 0 { serde_json::json!(agent_id) } else { serde_json::json!(null) },
+            "agent_registry": display_registry,
+            "chain_id": display_chain_id,
+            "name": name,
+            "description": description,
+            "image": image,
+            "registration_uri": registration_uri,
+            "wallet_address": wallet_address,
+            "owner_address": owner_address,
+            "is_active": is_active,
+            "x402_support": x402_support,
+            "services": services,
+        }
+    });
+
+    if local_identity {
+        resp["warning"] = serde_json::json!(
+            "This identity exists locally but is not linked to an on-chain NFT. Use import_identity to link an existing NFT, or register on-chain to mint a new one."
+        );
+    }
+
+    if !fetch_errors.is_empty() {
+        resp["fetch_errors"] = serde_json::json!(fetch_errors);
+    }
+
+    HttpResponse::Ok().json(resp)
 }
 
 /// Get agent identity by ID

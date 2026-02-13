@@ -315,13 +315,21 @@ pub struct AgentSettingsEntry {
     pub secret_key: Option<String>,
 }
 
-/// On-chain agent identity registration entry in backup (minimal — everything else fetched from chain)
+/// On-chain agent identity registration entry in backup (full metadata — DB is single source of truth)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentIdentityEntry {
     pub agent_id: i64,
     pub agent_registry: String,
     pub chain_id: i64,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub image: Option<String>,
+    pub x402_support: bool,
+    pub active: bool,
+    pub services_json: String,
+    pub supported_trust_json: String,
+    pub registration_uri: Option<String>,
 }
 
 /// x402 payment limit entry in backup

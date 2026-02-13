@@ -919,18 +919,54 @@ impl Database {
             }
         }
 
-        // Agent identity (our EIP-8004 registration — minimal: just the NFT ID + registry + chain)
-        // Everything else (name, description, URI, wallet, etc.) is fetched dynamically from chain.
+        // Agent identity (our EIP-8004 registration — single source of truth for identity metadata)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS agent_identity (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 agent_id INTEGER NOT NULL,
                 agent_registry TEXT NOT NULL,
                 chain_id INTEGER NOT NULL DEFAULT 8453,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                name TEXT,
+                description TEXT,
+                image TEXT,
+                x402_support INTEGER NOT NULL DEFAULT 1,
+                active INTEGER NOT NULL DEFAULT 1,
+                services_json TEXT NOT NULL DEFAULT '[]',
+                supported_trust_json TEXT NOT NULL DEFAULT '[\"reputation\",\"x402-payments\"]',
+                registration_uri TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )",
             [],
         )?;
+
+        // Migration: Add metadata columns to agent_identity if they don't exist (for old DBs)
+        {
+            let has_name: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('agent_identity') WHERE name='name'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|c| c > 0)
+                .unwrap_or(false);
+
+            if !has_name {
+                log::info!("[db] Migrating agent_identity: adding metadata columns");
+                let _ = conn.execute("ALTER TABLE agent_identity ADD COLUMN name TEXT", []);
+                let _ = conn.execute("ALTER TABLE agent_identity ADD COLUMN description TEXT", []);
+                let _ = conn.execute("ALTER TABLE agent_identity ADD COLUMN image TEXT", []);
+                let _ = conn.execute("ALTER TABLE agent_identity ADD COLUMN x402_support INTEGER NOT NULL DEFAULT 1", []);
+                let _ = conn.execute("ALTER TABLE agent_identity ADD COLUMN active INTEGER NOT NULL DEFAULT 1", []);
+                let _ = conn.execute("ALTER TABLE agent_identity ADD COLUMN services_json TEXT NOT NULL DEFAULT '[]'", []);
+                let _ = conn.execute("ALTER TABLE agent_identity ADD COLUMN supported_trust_json TEXT NOT NULL DEFAULT '[\"reputation\",\"x402-payments\"]'", []);
+                let _ = conn.execute("ALTER TABLE agent_identity ADD COLUMN registration_uri TEXT", []);
+                let _ = conn.execute("ALTER TABLE agent_identity ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))", []);
+
+                // One-time backfill from IDENTITY.json if it exists and DB row has no name yet
+                Self::backfill_identity_from_file(&conn);
+            }
+        }
 
         // Reputation feedback (given and received)
         conn.execute(
@@ -1300,6 +1336,267 @@ impl Database {
             [],
         );
 
+        // =====================================================
+        // Telemetry tables (agent-lightning philosophy)
+        // =====================================================
+
+        // execution_spans - structured telemetry for every tool/LLM/planning operation
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS execution_spans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                span_id TEXT UNIQUE NOT NULL,
+                sequence_id INTEGER NOT NULL,
+                rollout_id TEXT NOT NULL,
+                session_id INTEGER NOT NULL,
+                attempt_idx INTEGER NOT NULL DEFAULT 0,
+                parent_span_id TEXT,
+                span_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                duration_ms INTEGER,
+                attributes TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )?;
+
+        // Indexes for execution_spans
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spans_rollout ON execution_spans(rollout_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spans_session ON execution_spans(session_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spans_type ON execution_spans(span_type)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spans_started ON execution_spans(started_at)",
+            [],
+        );
+
+        // rollouts - lifecycle tracking for dispatch executions
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS rollouts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rollout_id TEXT UNIQUE NOT NULL,
+                session_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queuing',
+                config TEXT NOT NULL DEFAULT '{}',
+                resources_id TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                duration_ms INTEGER,
+                result TEXT,
+                error TEXT,
+                metadata TEXT NOT NULL DEFAULT '{}'
+            )",
+            [],
+        )?;
+
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rollouts_session ON rollouts(session_id)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rollouts_channel ON rollouts(channel_id)",
+            [],
+        );
+
+        // attempts - individual retry attempts within a rollout
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rollout_id TEXT NOT NULL,
+                attempt_idx INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                duration_ms INTEGER,
+                succeeded INTEGER NOT NULL DEFAULT 0,
+                failure_reason TEXT,
+                error TEXT,
+                tool_calls INTEGER NOT NULL DEFAULT 0,
+                llm_calls INTEGER NOT NULL DEFAULT 0,
+                tokens_used INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(rollout_id, attempt_idx)
+            )",
+            [],
+        )?;
+
+        // resource_versions - versioned prompts, model configs, tool configs
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS resource_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                version_id TEXT UNIQUE NOT NULL,
+                label TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 0,
+                resources TEXT NOT NULL DEFAULT '[]',
+                description TEXT,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resource_versions_active ON resource_versions(is_active)",
+            [],
+        );
+
+        Ok(())
+    }
+
+    // =====================================================
+    // Agent Identity Operations
+    // =====================================================
+
+    /// One-time migration: backfill agent_identity metadata from IDENTITY.json on disk
+    fn backfill_identity_from_file(conn: &DbConn) {
+        let identity_path = crate::config::identity_document_path();
+        let content = match std::fs::read_to_string(&identity_path) {
+            Ok(c) => c,
+            Err(_) => return, // No file — nothing to backfill
+        };
+
+        let reg: crate::eip8004::types::RegistrationFile = match serde_json::from_str(&content) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("[db] Could not parse IDENTITY.json for migration: {}", e);
+                return;
+            }
+        };
+
+        // Check if a DB row exists with NULL name (needs backfill)
+        let needs_backfill: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_identity WHERE name IS NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !needs_backfill {
+            return;
+        }
+
+        let services_json = serde_json::to_string(&reg.services).unwrap_or_else(|_| "[]".to_string());
+        let supported_trust_json = serde_json::to_string(&reg.supported_trust).unwrap_or_else(|_| "[]".to_string());
+
+        match conn.execute(
+            "UPDATE agent_identity SET name = ?1, description = ?2, image = ?3, x402_support = ?4, active = ?5, services_json = ?6, supported_trust_json = ?7, updated_at = datetime('now') WHERE name IS NULL",
+            rusqlite::params![
+                reg.name,
+                reg.description,
+                reg.image,
+                reg.x402_support as i32,
+                reg.active as i32,
+                services_json,
+                supported_trust_json,
+            ],
+        ) {
+            Ok(n) => {
+                if n > 0 {
+                    log::info!("[db] Backfilled agent_identity from IDENTITY.json ({} rows updated)", n);
+                }
+            }
+            Err(e) => {
+                log::warn!("[db] Failed to backfill agent_identity from IDENTITY.json: {}", e);
+            }
+        }
+    }
+
+    /// Get the full agent identity row (all metadata columns).
+    /// Only returns identities with agent_id > 0 (properly linked on-chain).
+    pub fn get_agent_identity_full(&self) -> Option<AgentIdentityRow> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT agent_id, agent_registry, chain_id, name, description, image, x402_support, active, services_json, supported_trust_json, registration_uri FROM agent_identity WHERE agent_id > 0 ORDER BY id DESC LIMIT 1",
+            [],
+            |row| {
+                Ok(AgentIdentityRow {
+                    agent_id: row.get(0)?,
+                    agent_registry: row.get(1)?,
+                    chain_id: row.get(2)?,
+                    name: row.get(3)?,
+                    description: row.get(4)?,
+                    image: row.get(5)?,
+                    x402_support: row.get::<_, i32>(6).unwrap_or(1) != 0,
+                    active: row.get::<_, i32>(7).unwrap_or(1) != 0,
+                    services_json: row.get::<_, String>(8).unwrap_or_else(|_| "[]".to_string()),
+                    supported_trust_json: row.get::<_, String>(9).unwrap_or_else(|_| "[]".to_string()),
+                    registration_uri: row.get(10)?,
+                })
+            },
+        )
+        .ok()
+    }
+
+    /// Upsert agent identity — deletes existing rows and inserts a new one with full metadata.
+    /// agent_id must be > 0 (a real on-chain agent ID).
+    pub fn upsert_agent_identity(
+        &self,
+        agent_id: i64,
+        agent_registry: &str,
+        chain_id: i64,
+        name: Option<&str>,
+        description: Option<&str>,
+        image: Option<&str>,
+        x402_support: bool,
+        active: bool,
+        services_json: &str,
+        supported_trust_json: &str,
+        registration_uri: Option<&str>,
+    ) -> Result<(), rusqlite::Error> {
+        if agent_id <= 0 {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "agent_id must be > 0 — cannot store unlinked identity".to_string(),
+            ));
+        }
+        let conn = self.conn();
+        conn.execute("DELETE FROM agent_identity", [])?;
+        conn.execute(
+            "INSERT INTO agent_identity (agent_id, agent_registry, chain_id, name, description, image, x402_support, active, services_json, supported_trust_json, registration_uri)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                agent_id,
+                agent_registry,
+                chain_id,
+                name,
+                description,
+                image,
+                x402_support as i32,
+                active as i32,
+                services_json,
+                supported_trust_json,
+                registration_uri,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Update a single field on the agent identity row
+    pub fn update_agent_identity_field(&self, field: &str, value: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn();
+        // Only allow known fields to prevent SQL injection
+        let sql = match field {
+            "name" => "UPDATE agent_identity SET name = ?1, updated_at = datetime('now')",
+            "description" => "UPDATE agent_identity SET description = ?1, updated_at = datetime('now')",
+            "image" => "UPDATE agent_identity SET image = ?1, updated_at = datetime('now')",
+            "active" => "UPDATE agent_identity SET active = ?1, updated_at = datetime('now')",
+            "x402_support" => "UPDATE agent_identity SET x402_support = ?1, updated_at = datetime('now')",
+            "services_json" => "UPDATE agent_identity SET services_json = ?1, updated_at = datetime('now')",
+            "supported_trust_json" => "UPDATE agent_identity SET supported_trust_json = ?1, updated_at = datetime('now')",
+            "registration_uri" => "UPDATE agent_identity SET registration_uri = ?1, updated_at = datetime('now')",
+            _ => return Err(rusqlite::Error::InvalidParameterName(format!("Unknown field: {}", field))),
+        };
+        conn.execute(sql, [value])?;
         Ok(())
     }
 
@@ -1460,6 +1757,44 @@ impl Database {
             Ok(status) => Ok(status),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
+        }
+    }
+}
+
+/// Full agent identity row from the DB
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentIdentityRow {
+    pub agent_id: i64,
+    pub agent_registry: String,
+    pub chain_id: i64,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub image: Option<String>,
+    pub x402_support: bool,
+    pub active: bool,
+    pub services_json: String,
+    pub supported_trust_json: String,
+    pub registration_uri: Option<String>,
+}
+
+impl AgentIdentityRow {
+    /// Convert services_json to a RegistrationFile for serialization
+    pub fn to_registration_file(&self) -> crate::eip8004::types::RegistrationFile {
+        let services: Vec<crate::eip8004::types::ServiceEntry> =
+            serde_json::from_str(&self.services_json).unwrap_or_default();
+        let supported_trust: Vec<String> =
+            serde_json::from_str(&self.supported_trust_json).unwrap_or_default();
+
+        crate::eip8004::types::RegistrationFile {
+            type_url: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1".to_string(),
+            name: self.name.clone().unwrap_or_default(),
+            description: self.description.clone().unwrap_or_default(),
+            image: self.image.clone(),
+            services,
+            x402_support: self.x402_support,
+            active: self.active,
+            registrations: None,
+            supported_trust,
         }
     }
 }

@@ -236,7 +236,7 @@ impl Tool for IdentityPostRegisterTool {
             registered.agent_id, registered.owner, registered.agent_uri
         );
 
-        // Persist to SQLite
+        // Persist to SQLite (preserve existing metadata if present, just update on-chain fields)
         let config = Eip8004Config::from_env();
         let agent_registry = config.agent_registry_string();
 
@@ -265,24 +265,37 @@ impl Tool for IdentityPostRegisterTool {
             }
         };
 
-        let conn = db.conn();
+        // Preserve existing metadata (name, description, etc.) from the pre-registration identity row
+        let existing = db.get_agent_identity_full();
+        let (name, description, image, x402_support, active, services_json, supported_trust_json) =
+            if let Some(ref row) = existing {
+                (
+                    row.name.as_deref(),
+                    row.description.as_deref(),
+                    row.image.as_deref(),
+                    row.x402_support,
+                    row.active,
+                    row.services_json.clone(),
+                    row.supported_trust_json.clone(),
+                )
+            } else {
+                (None, None, None, true, true, "[]".to_string(), "[\"reputation\",\"x402-payments\"]".to_string())
+            };
 
-        // Upsert: delete any existing rows first (only one identity per agent)
-        let _ = conn.execute("DELETE FROM agent_identity", []);
+        let reg_uri = if registered.agent_uri.is_empty() { None } else { Some(registered.agent_uri.as_str()) };
 
-        let insert_result = conn.execute(
-            "INSERT INTO agent_identity (agent_id, agent_registry, chain_id) VALUES (?1, ?2, ?3)",
-            rusqlite::params![
-                registered.agent_id as i64,
-                agent_registry,
-                config.chain_id as i64,
-            ],
-        );
-
-        match insert_result {
+        match db.upsert_agent_identity(
+            registered.agent_id as i64,
+            &agent_registry,
+            config.chain_id as i64,
+            name, description, image,
+            x402_support, active,
+            &services_json, &supported_trust_json,
+            reg_uri,
+        ) {
             Ok(_) => {
                 log::info!(
-                    "[identity_post_register] Persisted agent_id={} to agent_identity table",
+                    "[identity_post_register] Persisted agent_id={} with metadata to agent_identity table",
                     registered.agent_id
                 );
             }

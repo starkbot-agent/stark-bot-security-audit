@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 /// Intrinsic files mapping: (virtual_name, actual_path_from_repo_root)
 const INTRINSIC_FILES: &[(&str, &str)] = &[
     ("SOUL.md", "SOUL.md"),
-    ("IDENTITY.json", "IDENTITY.json"),
 ];
 
 /// Maximum output size in characters to prevent context bloat

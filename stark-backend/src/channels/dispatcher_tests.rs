@@ -1265,3 +1265,288 @@ async fn lp_deposit_flow_with_trace() {
     assert_eq!(task_numbers[5], Some((4, 5)), "Iteration 6 should show TASK 4/5 (task 3 completed)");
     assert_eq!(task_numbers[6], Some((5, 5)), "Iteration 7 should show TASK 5/5 (task 4 completed)");
 }
+
+// ============================================================================
+// Regression tests for merge-conflict-prone dispatcher logic.
+//
+// These tests guard against specific bugs that surfaced during merge conflicts:
+//
+// 1. safe_mode_finished_task_advances_task_queue:
+//    In safe mode, say_to_user(finished_task=true) with pending tasks must
+//    ADVANCE to the next task, not terminate the loop. A past regression
+//    used `finished_task || queue_empty` which would stop the loop early.
+//
+// 2. consecutive_say_to_user_with_pending_tasks_does_not_terminate:
+//    The consecutive-say_to_user loop breaker must NOT fire when there are
+//    pending tasks. The agent legitimately sends say_to_user between tasks.
+//
+// 3. say_to_user_mixed_with_other_tools_does_not_trigger_loop_break:
+//    The loop breaker should only fire when say_to_user is the ONLY tool
+//    called in consecutive iterations — not when mixed with real work tools.
+// ============================================================================
+
+/// Regression: safe mode + finished_task + pending tasks → must advance, not stop.
+///
+/// Scenario: 3-task plan in safe mode. The AI completes task 1 with
+/// say_to_user(finished_task=true), then task 2, then task 3.
+/// The loop must advance through all 3 tasks and not terminate after task 1.
+#[tokio::test]
+async fn safe_mode_finished_task_advances_task_queue() {
+    let responses = vec![
+        // Iteration 1 (Planner): define 3 tasks
+        AiResponse::with_tools(
+            String::new(),
+            vec![tool_call(
+                "define_tasks",
+                json!({
+                    "tasks": [
+                        "TASK 1 — Answer the first part of the question.",
+                        "TASK 2 — Answer the second part.",
+                        "TASK 3 — Summarize and report to user."
+                    ]
+                }),
+            )],
+        ),
+        // Iteration 2 (Task 1): say_to_user with finished_task=true
+        // BUG REGRESSION: if the condition is `finished_task || queue_empty`,
+        // this would terminate the loop here instead of advancing to task 2.
+        AiResponse::with_tools(
+            String::new(),
+            vec![tool_call(
+                "say_to_user",
+                json!({"message": "Part 1 done.", "finished_task": true}),
+            )],
+        ),
+        // Iteration 3 (Task 2): complete via task_fully_completed
+        AiResponse::with_tools(
+            String::new(),
+            vec![tool_call(
+                "task_fully_completed",
+                json!({"summary": "Part 2 done."}),
+            )],
+        ),
+        // Iteration 4 (Task 3): final say_to_user
+        AiResponse::with_tools(
+            String::new(),
+            vec![tool_call(
+                "say_to_user",
+                json!({"message": "All done! Here's the summary.", "finished_task": true}),
+            )],
+        ),
+    ];
+
+    let mut harness = TestHarness::new("web", true, false, responses);
+    let (result, _events) = harness.dispatch("multi-part question", false).await;
+
+    assert!(result.error.is_none(), "dispatch should succeed: {:?}", result.error);
+
+    // Verify task advancement via trace
+    let trace = harness.get_trace();
+    harness.write_trace("safe_mode_finished_task_advances");
+
+    let extract_task_num = |sys_prompt: &str| -> Option<(usize, usize)> {
+        if let Some(pos) = sys_prompt.find("CURRENT TASK (") {
+            let after = &sys_prompt[pos + "CURRENT TASK (".len()..];
+            if let Some(slash) = after.find('/') {
+                let current: usize = after[..slash].parse().ok()?;
+                let rest = &after[slash + 1..];
+                if let Some(paren) = rest.find(')') {
+                    let total: usize = rest[..paren].parse().ok()?;
+                    return Some((current, total));
+                }
+            }
+        }
+        None
+    };
+
+    let task_numbers: Vec<Option<(usize, usize)>> = trace.iter()
+        .map(|entry| {
+            let sys_prompt = entry.input_messages.first()
+                .map(|m| m.content.as_str())
+                .unwrap_or("");
+            extract_task_num(sys_prompt)
+        })
+        .collect();
+
+    eprintln!("\n=== SAFE MODE TASK ADVANCEMENT ===");
+    for (i, tn) in task_numbers.iter().enumerate() {
+        eprintln!("  Iteration {}: {:?}", i + 1, tn);
+    }
+    eprintln!("==================================\n");
+
+    // CRITICAL: We must reach at least 4 iterations (planner + 3 tasks).
+    // If the bug is present, we'd only get 2 (planner + task 1 terminates).
+    assert!(
+        trace.len() >= 4,
+        "Expected at least 4 iterations (planner + 3 tasks), got {}. \
+         If only 2, the safe_mode+finished_task bug is back: loop terminated \
+         instead of advancing to task 2.",
+        trace.len()
+    );
+
+    assert_eq!(task_numbers[0], None, "Iteration 1: planner (no task)");
+    assert_eq!(task_numbers[1], Some((1, 3)), "Iteration 2: TASK 1/3");
+    assert_eq!(task_numbers[2], Some((2, 3)), "Iteration 3: TASK 2/3 (task 1 advanced)");
+    assert_eq!(task_numbers[3], Some((3, 3)), "Iteration 4: TASK 3/3 (task 2 advanced)");
+}
+
+/// Regression: consecutive say_to_user with pending tasks must NOT terminate.
+///
+/// Scenario: 2-task plan. The AI sends say_to_user(finished_task=true) for
+/// task 1, then sends say_to_user(finished_task=true) for task 2. The
+/// consecutive-say_to_user loop breaker must NOT fire because there are
+/// pending tasks between the two calls.
+#[tokio::test]
+async fn consecutive_say_to_user_with_pending_tasks_does_not_terminate() {
+    let responses = vec![
+        // Iteration 1 (Planner): define 2 tasks
+        AiResponse::with_tools(
+            String::new(),
+            vec![tool_call(
+                "define_tasks",
+                json!({
+                    "tasks": [
+                        "TASK 1 — First task.",
+                        "TASK 2 — Second task, report to user."
+                    ]
+                }),
+            )],
+        ),
+        // Iteration 2 (Task 1): say_to_user finished_task=true
+        AiResponse::with_tools(
+            String::new(),
+            vec![tool_call(
+                "say_to_user",
+                json!({"message": "Task 1 done.", "finished_task": true}),
+            )],
+        ),
+        // Iteration 3 (Task 2): say_to_user finished_task=true (consecutive!)
+        // BUG REGRESSION: if the loop breaker doesn't check pending tasks,
+        // this would trigger the "consecutive say_to_user" termination.
+        AiResponse::with_tools(
+            String::new(),
+            vec![tool_call(
+                "say_to_user",
+                json!({"message": "Task 2 done, all complete!", "finished_task": true}),
+            )],
+        ),
+    ];
+
+    let mut harness = TestHarness::new("web", false, false, responses);
+    let (result, _events) = harness.dispatch("do two things", false).await;
+
+    assert!(result.error.is_none(), "dispatch should succeed: {:?}", result.error);
+
+    let trace = harness.get_trace();
+    harness.write_trace("consecutive_say_to_user_pending_tasks");
+
+    let extract_task_num = |sys_prompt: &str| -> Option<(usize, usize)> {
+        if let Some(pos) = sys_prompt.find("CURRENT TASK (") {
+            let after = &sys_prompt[pos + "CURRENT TASK (".len()..];
+            if let Some(slash) = after.find('/') {
+                let current: usize = after[..slash].parse().ok()?;
+                let rest = &after[slash + 1..];
+                if let Some(paren) = rest.find(')') {
+                    let total: usize = rest[..paren].parse().ok()?;
+                    return Some((current, total));
+                }
+            }
+        }
+        None
+    };
+
+    let task_numbers: Vec<Option<(usize, usize)>> = trace.iter()
+        .map(|entry| {
+            let sys_prompt = entry.input_messages.first()
+                .map(|m| m.content.as_str())
+                .unwrap_or("");
+            extract_task_num(sys_prompt)
+        })
+        .collect();
+
+    eprintln!("\n=== CONSECUTIVE SAY_TO_USER WITH PENDING TASKS ===");
+    for (i, tn) in task_numbers.iter().enumerate() {
+        eprintln!("  Iteration {}: {:?}", i + 1, tn);
+    }
+    eprintln!("===================================================\n");
+
+    // CRITICAL: Must reach iteration 3 (task 2). If the consecutive loop
+    // breaker fired incorrectly, we'd stop at iteration 2.
+    assert!(
+        trace.len() >= 3,
+        "Expected at least 3 iterations (planner + 2 tasks), got {}. \
+         If only 2, the consecutive say_to_user loop breaker is firing \
+         despite pending tasks.",
+        trace.len()
+    );
+
+    assert_eq!(task_numbers[0], None, "Iteration 1: planner");
+    assert_eq!(task_numbers[1], Some((1, 2)), "Iteration 2: TASK 1/2");
+    assert_eq!(task_numbers[2], Some((2, 2)), "Iteration 3: TASK 2/2 (task 1 advanced)");
+}
+
+/// Regression: say_to_user mixed with other tools should not trigger loop break.
+///
+/// Scenario: no task queue. The AI calls say_to_user + another tool in
+/// iteration 1, then say_to_user + another tool in iteration 2. Because
+/// say_to_user was NOT the only tool, the loop breaker should NOT fire.
+/// Then in iteration 3, the AI calls task_fully_completed to end normally.
+#[tokio::test]
+async fn say_to_user_mixed_with_other_tools_does_not_trigger_loop_break() {
+    let responses = vec![
+        // Iteration 1: say_to_user + set_agent_subtype (mixed batch)
+        AiResponse::with_tools(
+            String::new(),
+            vec![
+                tool_call("say_to_user", json!({"message": "Starting work..."})),
+                tool_call("set_agent_subtype", json!({"subtype": "general"})),
+            ],
+        ),
+        // Iteration 2: say_to_user again + another tool (still mixed)
+        // BUG REGRESSION: if the loop breaker checks `any say_to_user` instead
+        // of `only say_to_user`, this would terminate the loop.
+        AiResponse::with_tools(
+            String::new(),
+            vec![
+                tool_call("say_to_user", json!({"message": "Progress update..."})),
+                tool_call("set_agent_subtype", json!({"subtype": "general"})),
+            ],
+        ),
+        // Iteration 3: finish normally
+        AiResponse::with_tools(
+            String::new(),
+            vec![tool_call(
+                "task_fully_completed",
+                json!({"summary": "All done."}),
+            )],
+        ),
+    ];
+
+    let mut harness = TestHarness::new("web", false, false, responses);
+    let (result, _events) = harness.dispatch("do something complex", false).await;
+
+    assert!(result.error.is_none(), "dispatch should succeed: {:?}", result.error);
+
+    let trace = harness.get_trace();
+    harness.write_trace("say_to_user_mixed_tools");
+
+    eprintln!("\n=== SAY_TO_USER MIXED WITH OTHER TOOLS ===");
+    for (i, entry) in trace.iter().enumerate() {
+        let tool_names: Vec<&str> = entry.output_response.as_ref()
+            .map(|r| r.tool_calls.iter().map(|tc| tc.name.as_str()).collect())
+            .unwrap_or_default();
+        eprintln!("  Iteration {}: tools={:?}", i + 1, tool_names);
+    }
+    eprintln!("==========================================\n");
+
+    // CRITICAL: Must reach iteration 3. If the loop breaker incorrectly
+    // triggers on "any say_to_user" instead of "only say_to_user", we'd
+    // stop at iteration 2.
+    assert!(
+        trace.len() >= 3,
+        "Expected at least 3 iterations, got {}. \
+         If only 2, the say_to_user loop breaker is firing on mixed batches \
+         instead of say_to_user-only batches.",
+        trace.len()
+    );
+}

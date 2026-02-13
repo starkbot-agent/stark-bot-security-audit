@@ -1,6 +1,7 @@
 //! Import Identity tool
 //!
-//! Imports an existing EIP-8004 identity NFT that was transferred to this wallet.
+//! If identity already exists in the DB, returns it (read mode).
+//! Otherwise imports an existing EIP-8004 identity NFT from on-chain.
 //! Queries the StarkLicense contract for identity NFTs owned by the current wallet,
 //! verifies ownership, and persists the agent_id locally.
 
@@ -28,7 +29,7 @@ impl ImportIdentityTool {
             "agent_id".to_string(),
             PropertySchema {
                 schema_type: "integer".to_string(),
-                description: "Specific agent ID to import. If omitted, auto-discovers identity NFTs owned by this wallet.".to_string(),
+                description: "Specific agent ID to import. If omitted and no identity exists in DB, auto-discovers NFTs owned by this wallet.".to_string(),
                 default: None,
                 items: None,
                 enum_values: None,
@@ -38,9 +39,10 @@ impl ImportIdentityTool {
         ImportIdentityTool {
             definition: ToolDefinition {
                 name: "import_identity".to_string(),
-                description: "Import an existing EIP-8004 identity NFT that was transferred to this wallet. \
-                    If agent_id is provided, verifies ownership and imports that specific identity. \
-                    If omitted, auto-discovers identity NFTs owned by this wallet via balanceOf + tokenOfOwnerByIndex."
+                description: "Get your agent identity. If identity already exists in the database, returns it. \
+                    Otherwise imports an on-chain EIP-8004 identity NFT. \
+                    If agent_id is provided, always imports/re-imports that specific identity from chain. \
+                    If omitted and identity exists in DB, returns existing identity (read mode)."
                     .to_string(),
                 input_schema: ToolInputSchema {
                     schema_type: "object".to_string(),
@@ -78,6 +80,39 @@ impl Tool for ImportIdentityTool {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid parameters: {}", e)),
         };
+
+        // If no agent_id provided and a real identity exists in DB → return it (read mode)
+        if params.agent_id.is_none() {
+            if let Some(db) = &context.database {
+                if let Some(row) = db.get_agent_identity_full() {
+                    if row.agent_id > 0 {
+                        let reg = row.to_registration_file();
+                        let json_str = serde_json::to_string_pretty(&reg).unwrap_or_default();
+                        log::info!("[import_identity] Returning identity from DB (agent_id={})", row.agent_id);
+                        return ToolResult::success(format!(
+                            "=== Your Agent Identity ===\n\
+                            Agent ID: {}\n\
+                            Registry: {}\n\
+                            Chain ID: {}\n\
+                            Registration URI: {}\n\n\
+                            === Identity File ===\n{}",
+                            row.agent_id,
+                            &row.agent_registry,
+                            row.chain_id,
+                            row.registration_uri.as_deref().unwrap_or("(none)"),
+                            json_str,
+                        )).with_metadata(json!({
+                            "agent_id": row.agent_id,
+                            "name": row.name,
+                            "description": row.description,
+                            "registered": true,
+                            "registration_uri": row.registration_uri,
+                            "read_from_db": true,
+                        }));
+                    }
+                }
+            }
+        }
 
         // Get wallet address
         let wallet_provider = match &context.wallet_provider {
@@ -192,48 +227,18 @@ impl Tool for ImportIdentityTool {
             }
         };
 
-        // Fetch the identity file from the URI and save it locally
+        // Fetch the identity metadata from the URI
         let mut identity_hash: Option<String> = None;
+        let mut fetched_reg: Option<crate::eip8004::types::RegistrationFile> = None;
         if let Some(ref uri) = agent_uri {
-            // Extract identity hash from URLs like:
-            // https://identity.defirelay.com/api/identity/<hash>/raw
             if let Some(hash) = extract_identity_hash(uri) {
                 identity_hash = Some(hash);
             }
 
             match registry.fetch_registration(uri).await {
                 Ok(registration) => {
-                    // Save as IDENTITY.json in the soul directory
-                    let identity_path = crate::config::identity_document_path();
-
-                    // Ensure the soul directory exists
-                    if let Some(parent) = identity_path.parent() {
-                        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                            log::warn!("[import_identity] Could not create soul dir: {}", e);
-                        }
-                    }
-
-                    match serde_json::to_string_pretty(&registration) {
-                        Ok(json_str) => {
-                            match tokio::fs::write(&identity_path, &json_str).await {
-                                Ok(_) => {
-                                    log::info!(
-                                        "[import_identity] Saved IDENTITY.json to {}",
-                                        identity_path.display()
-                                    );
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "[import_identity] Failed to write IDENTITY.json: {}",
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("[import_identity] Failed to serialize identity: {}", e);
-                        }
-                    }
+                    log::info!("[import_identity] Fetched identity metadata from {}", uri);
+                    fetched_reg = Some(registration);
                 }
                 Err(e) => {
                     log::warn!("[import_identity] Could not fetch identity file from {}: {}", uri, e);
@@ -241,7 +246,7 @@ impl Tool for ImportIdentityTool {
             }
         }
 
-        // Persist to SQLite
+        // Persist to SQLite (with full metadata)
         let agent_registry = config.agent_registry_string();
 
         let db = match &context.database {
@@ -265,24 +270,38 @@ impl Tool for ImportIdentityTool {
             }
         };
 
-        let conn = db.conn();
+        // Build metadata from fetched registration (or defaults)
+        let (name, description, image, x402_support, active, services_json, supported_trust_json) =
+            if let Some(ref reg) = fetched_reg {
+                (
+                    Some(reg.name.as_str()),
+                    Some(reg.description.as_str()),
+                    reg.image.as_deref(),
+                    reg.x402_support,
+                    reg.active,
+                    serde_json::to_string(&reg.services).unwrap_or_else(|_| "[]".to_string()),
+                    serde_json::to_string(&reg.supported_trust).unwrap_or_else(|_| "[]".to_string()),
+                )
+            } else {
+                (None, None, None, true, true, "[]".to_string(), "[\"reputation\",\"x402-payments\"]".to_string())
+            };
 
-        // Upsert: delete any existing rows first (only one identity per agent)
-        let _ = conn.execute("DELETE FROM agent_identity", []);
-
-        let insert_result = conn.execute(
-            "INSERT INTO agent_identity (agent_id, agent_registry, chain_id) VALUES (?1, ?2, ?3)",
-            rusqlite::params![
-                agent_id as i64,
-                agent_registry,
-                config.chain_id as i64,
-            ],
-        );
-
-        match insert_result {
+        match db.upsert_agent_identity(
+            agent_id as i64,
+            &agent_registry,
+            config.chain_id as i64,
+            name,
+            description,
+            image,
+            x402_support,
+            active,
+            &services_json,
+            &supported_trust_json,
+            agent_uri.as_deref(),
+        ) {
             Ok(_) => {
                 log::info!(
-                    "[import_identity] Persisted agent_id={} to agent_identity table",
+                    "[import_identity] Persisted agent_id={} with metadata to agent_identity table",
                     agent_id
                 );
             }
@@ -320,22 +339,19 @@ impl Tool for ImportIdentityTool {
             ));
         }
 
-        let identity_path = crate::config::identity_document_path();
         let msg = format!(
             "IDENTITY IMPORTED ✓\n\n\
             Agent ID: {}\n\
             Owner: {}\n\
             URI: {}\n\
-            Identity file: {}\n\
             Identity hash: {}\n\
             Registry: {}\n\
             Chain: {} ({})\n\n\
-            The identity NFT has been imported and saved locally.\n\
+            The identity NFT has been imported and saved to the database.\n\
             The frontend dashboard will now show your registered identity.",
             agent_id,
             wallet_address,
             agent_uri.as_deref().unwrap_or("(unknown)"),
-            identity_path.display(),
             identity_hash.as_deref().unwrap_or("(none)"),
             config.identity_registry,
             config.chain_name,

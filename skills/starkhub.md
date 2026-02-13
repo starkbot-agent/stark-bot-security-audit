@@ -1,11 +1,11 @@
 ---
 name: starkhub
 description: "Browse, search, install, and submit skills on StarkHub (hub.starkbot.ai) — the decentralized skills directory for StarkBot agents."
-version: 2.7.0
+version: 2.8.0
 author: starkbot
 homepage: https://hub.starkbot.ai
 metadata: {"clawdbot":{"emoji":"🌐"}}
-requires_tools: [web_fetch, manage_skills, erc8128_fetch, modify_identity, define_tasks]
+requires_tools: [web_fetch, manage_skills, read_skill, erc8128_fetch, import_identity, define_tasks]
 tags: [general, all, skills, hub, discovery, meta, management]
 arguments:
   query:
@@ -56,7 +56,7 @@ Before doing any work, call `define_tasks` based on the requested action.
 ]}
 ```
 
-**For install:**
+**For install/download:**
 
 ```json
 {"tool": "define_tasks", "tasks": [
@@ -66,12 +66,12 @@ Before doing any work, call `define_tasks` based on the requested action.
 ]}
 ```
 
-**For submit:**
+**For submit/upload:**
 
 ```json
 {"tool": "define_tasks", "tasks": [
-  "TASK 1 — Ensure username: use erc8128_fetch to GET /api/auth/me. If no username, read IDENTITY.json via modify_identity and PUT /api/authors/me/username via erc8128_fetch. See starkhub skill 'Ensure Username'.",
-  "TASK 2 — Prepare: read the local skill markdown via manage_skills or read_file.",
+  "TASK 1 — Ensure username: use erc8128_fetch to GET /api/auth/me. If no username, read identity via import_identity (no params) and PUT /api/authors/me/username via erc8128_fetch. See starkhub skill 'Ensure Username'.",
+  "TASK 2 — Prepare: read the local skill's full raw markdown via read_skill tool (returns complete SKILL.md with frontmatter, ready for submission).",
   "TASK 3 — Submit: POST the skill markdown to StarkHub via erc8128_fetch.",
   "TASK 4 — Confirm: say_to_user summarizing whether the skill was or was not successfully submitted. Mention it will need to be reviewed before it goes fully live."
 ]}
@@ -223,10 +223,11 @@ Returns `{"wallet_address": "0x...", "username": "...", ...}`.
 
 ```json
 {
-  "tool": "modify_identity",
-  "action": "read"
+  "tool": "import_identity"
 }
 ```
+
+(No params → returns existing identity from DB)
 
 2. Extract the `name` field and **sanitize** it: lowercase, replace spaces with hyphens, strip anything not `[a-z0-9-]`, ensure it starts with a letter, is 3–39 chars, no consecutive hyphens, no trailing hyphen.
 
@@ -246,7 +247,7 @@ Returns `{"success": true, "username": "..."}` on success.
 
 **If username is taken** (409), append `-agent` or `-bot` and retry once. If still fails, ask the user.
 
-**If IDENTITY.json doesn't exist**, ask the user what username to use.
+**If no identity exists in the database**, ask the user what username to use.
 
 > **Note:** StarkHub usernames are **permanent** — once set, they cannot be changed.
 
@@ -268,17 +269,16 @@ requires_tools: [tool1, tool2]
 Instructions for the agent...
 ```
 
-If submitting an existing local skill, read its markdown with `manage_skills`:
+If submitting an existing local skill, read its full markdown with `read_skill`:
 
 ```json
 {
-  "tool": "manage_skills",
-  "action": "get",
+  "tool": "read_skill",
   "name": "skill_name"
 }
 ```
 
-The `prompt_template` field contains the body. Reconstruct the full markdown with frontmatter.
+This returns the complete SKILL.md content (frontmatter + body), ready to submit directly.
 
 ### Step 3: Submit
 
@@ -339,8 +339,8 @@ Only the original author can update their skill.
 
 ### "Publish my skill to StarkHub"
 
-1. `erc8128_fetch GET /api/auth/me` — if no username, read IDENTITY.json and `erc8128_fetch PUT /api/authors/me/username`
-2. Read the local skill markdown (via `manage_skills` get or `read_file`)
+1. `erc8128_fetch GET /api/auth/me` — if no username, read identity via `import_identity` (no params) and `erc8128_fetch PUT /api/authors/me/username`
+2. Read the local skill markdown via `read_skill` (returns full SKILL.md with frontmatter)
 3. `erc8128_fetch POST /api/submit` with `raw_markdown` in body
 4. Confirm pending status to user
 

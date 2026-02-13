@@ -83,6 +83,9 @@ pub enum EventType {
     TxQueueDenied,                // User denied, tx deleted
     // Context management events
     ContextCompacting,  // Session context is being compacted to reduce token usage
+    // Telemetry events
+    SpanEmitted,        // A telemetry span was emitted (for real-time telemetry streaming)
+    RolloutStatusChange, // Rollout lifecycle status changed
 }
 
 impl EventType {
@@ -147,6 +150,8 @@ impl EventType {
             Self::TxQueueConfirmed => "tx_queue.confirmed",
             Self::TxQueueDenied => "tx_queue.denied",
             Self::ContextCompacting => "context.compacting",
+            Self::SpanEmitted => "telemetry.span_emitted",
+            Self::RolloutStatusChange => "telemetry.rollout_status",
         }
     }
 }
@@ -1242,6 +1247,44 @@ impl GatewayEvent {
                 "session_id": session_id,
                 "compaction_type": compaction_type,  // "incremental" or "full"
                 "reason": reason,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// A telemetry span was emitted
+    pub fn span_emitted(
+        channel_id: i64,
+        span_type: &str,
+        span_name: &str,
+        status: &str,
+    ) -> Self {
+        Self::new(
+            EventType::SpanEmitted,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "span_type": span_type,
+                "span_name": span_name,
+                "status": status,
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            }),
+        )
+    }
+
+    /// Rollout lifecycle status changed
+    pub fn rollout_status_change(
+        channel_id: i64,
+        rollout_id: &str,
+        status: &str,
+        attempt_count: u32,
+    ) -> Self {
+        Self::new(
+            EventType::RolloutStatusChange,
+            serde_json::json!({
+                "channel_id": channel_id,
+                "rollout_id": rollout_id,
+                "status": status,
+                "attempt_count": attempt_count,
                 "timestamp": chrono::Utc::now().to_rfc3339()
             }),
         )

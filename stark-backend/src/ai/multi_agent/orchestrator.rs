@@ -145,6 +145,32 @@ impl Orchestrator {
             .replace("{available_skills}", skills_text)
     }
 
+    /// Get the planner prompt using a resource manager for versioned prompt resolution.
+    pub fn get_planner_prompt_with_resource_manager(
+        &self,
+        skills_text: &str,
+        resource_manager: &crate::telemetry::ResourceManager,
+    ) -> String {
+        resource_manager.resolve_prompt("system_prompt.task_planner")
+            .replace("{original_request}", &self.context.original_request)
+            .replace("{available_skills}", skills_text)
+    }
+
+    /// Get the system prompt, optionally using a resource manager for versioned prompts.
+    pub fn get_system_prompt_with_resource_manager(
+        &self,
+        resource_manager: &crate::telemetry::ResourceManager,
+    ) -> String {
+        if self.context.mode == AgentMode::TaskPlanner && !self.context.planner_completed {
+            return self.get_planner_prompt_with_resource_manager(
+                "No skills available.",
+                resource_manager,
+            );
+        }
+        let base_prompt = resource_manager.resolve_prompt("system_prompt.assistant");
+        self.build_system_prompt(&base_prompt)
+    }
+
     /// Get the system prompt
     pub fn get_system_prompt(&self) -> String {
         // If in task planner mode, return the planner prompt
@@ -152,8 +178,12 @@ impl Orchestrator {
             return self.get_planner_prompt();
         }
 
-        let base_prompt = include_str!("prompts/assistant.md");
+        let base_prompt = include_str!("prompts/assistant.md").to_string();
+        self.build_system_prompt(&base_prompt)
+    }
 
+    /// Internal method to build the full system prompt from a base prompt.
+    fn build_system_prompt(&self, base_prompt: &str) -> String {
         let mut prompt = String::new();
 
         // CURRENT TASK goes FIRST — highest priority for the AI to see

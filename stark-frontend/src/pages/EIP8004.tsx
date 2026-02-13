@@ -46,6 +46,8 @@ interface AgentIdentity {
 interface IdentityResponse {
   success: boolean;
   registered: boolean;
+  local_identity?: boolean;
+  warning?: string;
   identity?: AgentIdentity;
   config?: {
     chain_id: number;
@@ -94,13 +96,16 @@ export default function EIP8004() {
   const [searchQuery, setSearchQuery] = useState('');
   const [copied, setCopied] = useState<string | null>(null);
 
-  const { data: configData, isLoading: configLoading } = useApi<ConfigResponse>('/eip8004/config');
-  const { data: identityData, isLoading: identityLoading, refetch: refetchIdentity } = useApi<IdentityResponse>('/eip8004/identity');
-  const { data: agentsData, isLoading: agentsLoading, refetch: refetchAgents } = useApi<DiscoveryResponse>('/eip8004/agents');
+  const { data: configData, error: configError, isLoading: configLoading } = useApi<ConfigResponse>('/eip8004/config');
+  const { data: identityData, error: identityError, isLoading: identityLoading, refetch: refetchIdentity } = useApi<IdentityResponse>('/eip8004/identity');
+  const { data: agentsData, error: agentsError, isLoading: agentsLoading, refetch: refetchAgents } = useApi<DiscoveryResponse>('/eip8004/agents');
 
   const config = configData?.config;
   const identity = identityData?.identity;
   const isRegistered = identityData?.registered ?? false;
+  const isLocalOnly = identityData?.local_identity ?? false;
+  const identityWarning = identityData?.warning;
+  const hasIdentity = (isRegistered || isLocalOnly) && !!identity;
   const agents = agentsData?.agents ?? [];
 
   const copyToClipboard = (text: string, label: string) => {
@@ -168,15 +173,41 @@ export default function EIP8004() {
                 </Button>
               </div>
 
-              {identityLoading ? (
+              {identityError ? (
+                <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+                  <p className="text-red-400 font-medium">Failed to load identity</p>
+                  <p className="text-slate-400 text-sm mt-1">{identityError}</p>
+                  <Button variant="secondary" size="sm" className="mt-3" onClick={() => refetchIdentity()}>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Retry
+                  </Button>
+                </div>
+              ) : identityLoading ? (
                 <div className="text-center py-8 text-slate-400">Loading identity...</div>
-              ) : isRegistered && identity ? (
+              ) : hasIdentity && identity ? (
                 <div className="space-y-4">
-                  <div className="flex items-center gap-4 p-4 bg-green-500/10 border border-green-500/30 rounded-lg">
-                    <CheckCircle className="w-6 h-6 text-green-400" />
+                  {isLocalOnly && identityWarning && (
+                    <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                      <p className="text-amber-400 font-medium">Local Identity Only</p>
+                      <p className="text-slate-400 text-sm mt-1">{identityWarning}</p>
+                    </div>
+                  )}
+                  <div className={`flex items-center gap-4 p-4 rounded-lg ${
+                    isLocalOnly
+                      ? 'bg-amber-500/10 border border-amber-500/30'
+                      : 'bg-green-500/10 border border-green-500/30'
+                  }`}>
+                    <CheckCircle className={`w-6 h-6 ${isLocalOnly ? 'text-amber-400' : 'text-green-400'}`} />
                     <div>
-                      <p className="text-green-400 font-medium">Registered Agent</p>
-                      <p className="text-slate-400 text-sm">Agent #{identity.agent_id} on {identity.chain_id === 8453 ? 'Base' : `Chain ${identity.chain_id}`}</p>
+                      <p className={`font-medium ${isLocalOnly ? 'text-amber-400' : 'text-green-400'}`}>
+                        {isLocalOnly ? 'Local Identity (Not Linked)' : 'Registered Agent'}
+                      </p>
+                      <p className="text-slate-400 text-sm">
+                        {identity.agent_id
+                          ? `Agent #${identity.agent_id} on ${identity.chain_id === 8453 ? 'Base' : `Chain ${identity.chain_id}`}`
+                          : `${identity.chain_id === 8453 ? 'Base' : `Chain ${identity.chain_id}`} — use import_identity to link on-chain NFT`
+                        }
+                      </p>
                     </div>
                     <div className="ml-auto flex gap-2">
                       {identity.x402_support && (
@@ -447,7 +478,16 @@ export default function EIP8004() {
                 />
               </div>
 
-              {agentsLoading ? (
+              {agentsError ? (
+                <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+                  <p className="text-red-400 font-medium">Failed to load agents</p>
+                  <p className="text-slate-400 text-sm mt-1">{agentsError}</p>
+                  <Button variant="secondary" size="sm" className="mt-3" onClick={() => refetchAgents()}>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Retry
+                  </Button>
+                </div>
+              ) : agentsLoading ? (
                 <div className="text-center py-8 text-slate-400">Loading agents...</div>
               ) : agents.length === 0 ? (
                 <div className="text-center py-8 text-slate-400">
@@ -520,7 +560,12 @@ export default function EIP8004() {
             <CardContent>
               <h2 className="text-lg font-semibold text-white mb-4">EIP-8004 Configuration</h2>
 
-              {configLoading ? (
+              {configError ? (
+                <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-lg">
+                  <p className="text-red-400 font-medium">Failed to load configuration</p>
+                  <p className="text-slate-400 text-sm mt-1">{configError}</p>
+                </div>
+              ) : configLoading ? (
                 <div className="text-center py-8 text-slate-400">Loading configuration...</div>
               ) : config ? (
                 <div className="space-y-4">

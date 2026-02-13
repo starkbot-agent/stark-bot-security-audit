@@ -44,6 +44,14 @@ pub enum HookEvent {
     SessionStart,
     /// Session ended (conversation complete)
     SessionEnd,
+    /// When a reward signal is emitted (telemetry)
+    OnRewardEmitted,
+    /// When a telemetry annotation is recorded
+    OnAnnotation,
+    /// When a rollout retry is triggered
+    OnRolloutRetry,
+    /// When a watchdog timeout fires
+    OnWatchdogTimeout,
 }
 
 impl HookEvent {
@@ -65,6 +73,10 @@ impl HookEvent {
             HookEvent::AfterPrCreate => "after_pr_create",
             HookEvent::SessionStart => "session_start",
             HookEvent::SessionEnd => "session_end",
+            HookEvent::OnRewardEmitted => "on_reward_emitted",
+            HookEvent::OnAnnotation => "on_annotation",
+            HookEvent::OnRolloutRetry => "on_rollout_retry",
+            HookEvent::OnWatchdogTimeout => "on_watchdog_timeout",
         }
     }
 }

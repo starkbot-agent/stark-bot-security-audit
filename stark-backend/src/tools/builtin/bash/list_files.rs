@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 /// Intrinsic files that appear in all workspaces
 const INTRINSIC_FILES: &[(&str, &str)] = &[
     ("SOUL.md", "Agent personality and behavior configuration"),
-    ("IDENTITY.json", "Agent EIP-8004 identity registration file"),
 ];
 
 /// Default maximum entries to return per page

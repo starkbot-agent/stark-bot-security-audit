@@ -45,6 +45,7 @@ struct IntrinsicFile {
     name: &'static str,
     description: &'static str,
     writable: bool,
+    deletable: bool,
 }
 
 /// Resolve the absolute path for an intrinsic file by name
@@ -52,33 +53,31 @@ fn intrinsic_path(name: &str) -> Option<PathBuf> {
     match name {
         "soul.md" => Some(crate::config::soul_document_path()),
         "guidelines.md" => Some(crate::config::guidelines_document_path()),
-        "identity.json" => Some(crate::config::identity_document_path()),
         "assistant.md" => Some(crate::config::backend_dir().join("src/ai/multi_agent/prompts/assistant.md")),
         _ => None,
     }
 }
 
 /// List of intrinsic files
+/// Note: identity.json removed — identity metadata is now stored in the DB (agent_identity table)
 const INTRINSIC_FILES: &[IntrinsicFile] = &[
     IntrinsicFile {
         name: "soul.md",
         description: "Agent personality and identity",
         writable: true,
+        deletable: false,
     },
     IntrinsicFile {
         name: "guidelines.md",
         description: "Operational and business guidelines",
         writable: true,
-    },
-    IntrinsicFile {
-        name: "identity.json",
-        description: "Agent EIP-8004 identity registration file",
-        writable: true,
+        deletable: false,
     },
     IntrinsicFile {
         name: "assistant.md",
         description: "System instructions (read-only)",
         writable: false,
+        deletable: false,
     },
 ];
 
@@ -87,6 +86,7 @@ struct IntrinsicFileInfo {
     name: String,
     description: String,
     writable: bool,
+    deletable: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +110,7 @@ async fn list_intrinsic(
             name: f.name.to_string(),
             description: f.description.to_string(),
             writable: f.writable,
+            deletable: f.deletable,
         })
         .collect();
 
@@ -266,11 +267,74 @@ async fn write_intrinsic(
     })
 }
 
+/// Delete an intrinsic file (only deletable ones)
+async fn delete_intrinsic(
+    data: web::Data<AppState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> impl Responder {
+    if let Err(resp) = validate_session_from_request(&data, &req) {
+        return resp;
+    }
+
+    let name = path.into_inner();
+
+    let intrinsic = match INTRINSIC_FILES.iter().find(|f| f.name == name) {
+        Some(i) => i,
+        None => {
+            return HttpResponse::NotFound().json(WriteIntrinsicResponse {
+                success: false,
+                error: Some("Intrinsic file not found".to_string()),
+            });
+        }
+    };
+
+    if !intrinsic.deletable {
+        return HttpResponse::Forbidden().json(WriteIntrinsicResponse {
+            success: false,
+            error: Some(format!("'{}' cannot be deleted", name)),
+        });
+    }
+
+    let full_path = match intrinsic_path(intrinsic.name) {
+        Some(p) => p,
+        None => {
+            return HttpResponse::InternalServerError().json(WriteIntrinsicResponse {
+                success: false,
+                error: Some("Could not resolve file path".to_string()),
+            });
+        }
+    };
+
+    if !full_path.exists() {
+        return HttpResponse::Ok().json(WriteIntrinsicResponse {
+            success: true,
+            error: None,
+        });
+    }
+
+    if let Err(e) = fs::remove_file(&full_path).await {
+        log::error!("Failed to delete intrinsic file {}: {}", name, e);
+        return HttpResponse::InternalServerError().json(WriteIntrinsicResponse {
+            success: false,
+            error: Some(format!("Failed to delete file: {}", e)),
+        });
+    }
+
+    log::info!("Deleted intrinsic file: {}", name);
+
+    HttpResponse::Ok().json(WriteIntrinsicResponse {
+        success: true,
+        error: None,
+    })
+}
+
 pub fn config(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api/intrinsic")
             .route("", web::get().to(list_intrinsic))
             .route("/{name}", web::get().to(read_intrinsic))
-            .route("/{name}", web::put().to(write_intrinsic)),
+            .route("/{name}", web::put().to(write_intrinsic))
+            .route("/{name}", web::delete().to(delete_intrinsic)),
     );
 }

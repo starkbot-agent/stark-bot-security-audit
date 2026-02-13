@@ -176,6 +176,10 @@ impl Scheduler {
                 log::error!("Scheduler: Failed to cleanup safe mode channels: {}", e);
             }
         }
+
+        // Cleanup old telemetry spans (keep last 30 days)
+        let telemetry_store = crate::telemetry::TelemetryStore::new(self.db.clone());
+        telemetry_store.prune();
     }
 
     /// Process due cron jobs

@@ -37,6 +37,7 @@ mod web3;
 mod keystore_client;
 mod identity_client;
 mod modules;
+mod telemetry;
 
 use channels::{ChannelManager, MessageDispatcher, SafeModeChannelRateLimiter};
 use tx_queue::TxQueueManager;
@@ -75,6 +76,10 @@ pub struct AppState {
     pub module_workers: Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// Server start time for uptime calculation
     pub started_at: std::time::Instant,
+    /// Telemetry store for querying execution spans and reward stats
+    pub telemetry_store: Arc<telemetry::TelemetryStore>,
+    /// Resource manager for versioned prompts and configs
+    pub resource_manager: Arc<telemetry::ResourceManager>,
 }
 
 /// Auto-retrieve backup from keystore on fresh instance
@@ -536,18 +541,28 @@ async fn restore_backup_data(
         }
     }
 
-    // Restore identity document (IDENTITY.json) from backup if not already present
-    if let Some(identity_content) = &backup_data.identity_document {
-        let identity_path = config::identity_document_path();
-        if identity_path.exists() {
-            log::info!("[Keystore] Identity document already exists locally, skipping restore from backup");
-        } else {
-            if let Some(parent) = identity_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            match std::fs::write(&identity_path, identity_content) {
-                Ok(_) => log::info!("[Keystore] Restored identity document from backup"),
-                Err(e) => log::warn!("[Keystore] Failed to restore identity document: {}", e),
+    // Legacy: if old backup has identity_document but no agent_identity entry,
+    // parse and migrate to DB (only if no DB row exists yet)
+    if backup_data.agent_identity.is_none() {
+        if let Some(identity_content) = &backup_data.identity_document {
+            let existing: i64 = db.conn()
+                .query_row("SELECT COUNT(*) FROM agent_identity", [], |r| r.get(0))
+                .unwrap_or(0);
+            if existing == 0 {
+                if let Ok(reg) = serde_json::from_str::<crate::eip8004::types::RegistrationFile>(identity_content) {
+                    let services_json = serde_json::to_string(&reg.services).unwrap_or_else(|_| "[]".to_string());
+                    let supported_trust_json = serde_json::to_string(&reg.supported_trust).unwrap_or_else(|_| "[]".to_string());
+                    match db.upsert_agent_identity(
+                        0, "", 0,
+                        Some(&reg.name), Some(&reg.description), reg.image.as_deref(),
+                        reg.x402_support, reg.active,
+                        &services_json, &supported_trust_json,
+                        None,
+                    ) {
+                        Ok(_) => log::info!("[Keystore] Migrated legacy identity_document to DB"),
+                        Err(e) => log::warn!("[Keystore] Failed to migrate legacy identity_document: {}", e),
+                    }
+                }
             }
         }
     }
@@ -568,17 +583,25 @@ async fn restore_backup_data(
         log::info!("[Keystore] Restored {} x402 payment limits", restored_x402_limits);
     }
 
-    // Restore on-chain agent identity registration if present and no local row exists
+    // Restore agent identity from backup (with full metadata)
     if let Some(ref ai) = backup_data.agent_identity {
         let conn = db.conn();
         let existing: i64 = conn
             .query_row("SELECT COUNT(*) FROM agent_identity", [], |r| r.get(0))
             .unwrap_or(0);
         if existing == 0 {
-            match conn.execute(
-                "INSERT INTO agent_identity (agent_id, agent_registry, chain_id) \
-                 VALUES (?1, ?2, ?3)",
-                rusqlite::params![ai.agent_id, ai.agent_registry, ai.chain_id],
+            match db.upsert_agent_identity(
+                ai.agent_id,
+                &ai.agent_registry,
+                ai.chain_id,
+                ai.name.as_deref(),
+                ai.description.as_deref(),
+                ai.image.as_deref(),
+                ai.x402_support,
+                ai.active,
+                &ai.services_json,
+                &ai.supported_trust_json,
+                ai.registration_uri.as_deref(),
             ) {
                 Ok(_) => {
                     log::info!(
@@ -1197,6 +1220,8 @@ async fn main() -> std::io::Result<()> {
                 disk_quota: disk_q.clone(),
                 module_workers: Arc::clone(&mod_workers),
                 started_at: std::time::Instant::now(),
+                telemetry_store: Arc::new(telemetry::TelemetryStore::new(Arc::clone(&db))),
+                resource_manager: Arc::new(telemetry::ResourceManager::new(Arc::clone(&db))),
             }))
             .app_data(web::Data::new(Arc::clone(&sched)))
             // WebSocket data for /ws route
@@ -1234,6 +1259,7 @@ async fn main() -> std::io::Result<()> {
             .configure(controllers::system::config)
             .configure(controllers::well_known::config)
             .configure(controllers::x402_limits::config)
+            .configure(controllers::telemetry::config)
             // WebSocket Gateway route (same port as HTTP, required for single-port platforms)
             .route("/ws", web::get().to(gateway::actix_ws::ws_handler));
 

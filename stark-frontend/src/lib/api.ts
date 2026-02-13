@@ -1442,6 +1442,7 @@ export interface IntrinsicFileInfo {
   name: string;
   description: string;
   writable: boolean;
+  deletable?: boolean;
 }
 
 export interface IntrinsicFileContent {
@@ -1475,6 +1476,12 @@ export async function writeIntrinsicFile(name: string, content: string): Promise
   return apiFetch(`/intrinsic/${encodeURIComponent(name)}`, {
     method: 'PUT',
     body: JSON.stringify({ content }),
+  });
+}
+
+export async function deleteIntrinsicFile(name: string): Promise<WriteIntrinsicResponse> {
+  return apiFetch(`/intrinsic/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
   });
 }
 

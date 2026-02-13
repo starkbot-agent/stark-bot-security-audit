@@ -6,7 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use parking_lot::Mutex;
 
@@ -174,8 +174,8 @@ pub struct SpanCollector {
     sequence: AtomicU64,
     /// The rollout ID this collector is associated with
     rollout_id: String,
-    /// The session ID
-    session_id: i64,
+    /// The session ID (atomic to allow updating after rollout creation)
+    session_id: AtomicI64,
     /// Current attempt index
     attempt_idx: AtomicU64,
     /// Collected spans (thread-safe)
@@ -188,7 +188,7 @@ impl SpanCollector {
         Self {
             sequence: AtomicU64::new(0),
             rollout_id,
-            session_id,
+            session_id: AtomicI64::new(session_id),
             attempt_idx: AtomicU64::new(0),
             spans: Mutex::new(Vec::new()),
         }
@@ -201,7 +201,12 @@ impl SpanCollector {
 
     /// Get the session ID.
     pub fn session_id(&self) -> i64 {
-        self.session_id
+        self.session_id.load(Ordering::Relaxed)
+    }
+
+    /// Update the session ID (called once the session is resolved).
+    pub fn set_session(&self, session_id: i64) {
+        self.session_id.store(session_id, Ordering::Relaxed);
     }
 
     /// Set the current attempt index.
@@ -216,7 +221,7 @@ impl SpanCollector {
         Span::new(
             seq,
             self.rollout_id.clone(),
-            self.session_id,
+            self.session_id.load(Ordering::Relaxed),
             attempt,
             span_type,
             name.into(),

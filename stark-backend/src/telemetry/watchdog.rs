@@ -113,6 +113,16 @@ impl Watchdog {
         }
     }
 
+    /// Get the watchdog configuration.
+    pub fn config(&self) -> &WatchdogConfig {
+        &self.config
+    }
+
+    /// Get the reward emitter for structured reward signals.
+    pub fn reward_emitter(&self) -> &RewardEmitter {
+        &self.reward_emitter
+    }
+
     /// Record a heartbeat indicating the execution is still alive.
     pub fn heartbeat(&self) {
         *self.last_heartbeat.lock() = Utc::now();
@@ -127,8 +137,50 @@ impl Watchdog {
 
     /// Guard a tool execution with a timeout.
     ///
-    /// Returns the tool result on success, or a `WatchdogError::Timeout` if the
-    /// operation exceeds the configured timeout for the given tool.
+    /// Works with infallible futures (e.g., `tool_registry.execute()` which returns
+    /// `ToolResult` directly, not `Result`). Returns `Some(T)` on success, `None` on timeout.
+    /// On timeout, emits a watchdog span and reward signal.
+    pub async fn guard_tool_call<F, T>(
+        &self,
+        tool_name: &str,
+        fut: F,
+    ) -> Option<T>
+    where
+        F: Future<Output = T>,
+    {
+        let tool_timeout = self.config.timeout_for_tool(tool_name);
+        let timeout_ms = tool_timeout.as_millis() as u64;
+
+        let mut span = self.collector.start_span(SpanType::Watchdog, format!("guard_tool:{}", tool_name));
+        span.attributes = json!({
+            "tool_name": tool_name,
+            "timeout_ms": timeout_ms,
+        });
+
+        self.heartbeat();
+
+        match timeout(tool_timeout, fut).await {
+            Ok(result) => {
+                span.succeed();
+                self.collector.record(span);
+                self.heartbeat();
+                Some(result)
+            }
+            Err(_elapsed) => {
+                span.timeout();
+                self.collector.record(span);
+                self.reward_emitter.watchdog_timeout(tool_name, timeout_ms);
+                log::warn!(
+                    "[WATCHDOG] Tool '{}' timed out after {}ms",
+                    tool_name,
+                    timeout_ms
+                );
+                None
+            }
+        }
+    }
+
+    /// Guard a tool execution with a timeout (for Result-returning futures).
     pub async fn guard_tool<F, T, E>(
         &self,
         tool_name: &str,
@@ -140,7 +192,6 @@ impl Watchdog {
         let tool_timeout = self.config.timeout_for_tool(tool_name);
         let timeout_ms = tool_timeout.as_millis() as u64;
 
-        // Start a watchdog span
         let mut span = self.collector.start_span(SpanType::Watchdog, format!("guard_tool:{}", tool_name));
         span.attributes = json!({
             "tool_name": tool_name,
@@ -231,7 +282,9 @@ impl Watchdog {
 
     /// Start a background heartbeat monitor task.
     ///
-    /// Returns a JoinHandle that can be used to cancel the monitor.
+    /// The monitor only observes — it does NOT reset the heartbeat. Only actual
+    /// execution (guard_tool_call, guard_tool, guard_llm) registers heartbeats.
+    /// Returns a JoinHandle that should be aborted when the dispatch completes.
     pub fn start_heartbeat_monitor(
         self: &Arc<Self>,
         channel_id: i64,
@@ -249,17 +302,17 @@ impl Watchdog {
 
                 if watchdog.is_unresponsive() {
                     log::warn!(
-                        "[WATCHDOG] Channel {} execution appears unresponsive (no heartbeat)",
-                        channel_id
+                        "[WATCHDOG] Channel {} execution appears unresponsive (no heartbeat for >{}s)",
+                        channel_id,
+                        watchdog.config.heartbeat_max_silence_secs
                     );
                     broadcaster.broadcast(crate::gateway::protocol::GatewayEvent::agent_error(
                         channel_id,
                         "Execution may be unresponsive. Monitoring...",
                     ));
                 }
-
-                // Touch heartbeat to acknowledge we checked
-                watchdog.heartbeat();
+                // Note: We intentionally do NOT call heartbeat() here.
+                // Only actual tool/LLM execution registers heartbeats.
             }
         })
     }

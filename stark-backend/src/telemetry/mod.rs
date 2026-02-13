@@ -17,7 +17,7 @@ pub mod store;
 // Re-export key types for convenience
 pub use span::{Span, SpanCollector, SpanGuard, SpanStatus, SpanType};
 pub use rollout::{Attempt, FailureReason, Rollout, RolloutConfig, RolloutManager, RolloutStatus};
-pub use emitter::{clear_active_collector, emit_annotation, emit_message, emit_reward, emit_tool_reward, set_active_collector};
+pub use emitter::{clear_active_collector, emit_annotation, set_active_collector};
 pub use reward::RewardEmitter;
 pub use watchdog::{Watchdog, WatchdogConfig, WatchdogError};
 pub use resource_version::{Resource, ResourceBundle, ResourceManager, ResourceType};

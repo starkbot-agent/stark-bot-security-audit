@@ -385,6 +385,6 @@ fn parse_span_status(s: &str) -> SpanStatus {
         "timed_out" => SpanStatus::TimedOut,
         "skipped" => SpanStatus::Skipped,
         "cancelled" => SpanStatus::Cancelled,
-        _ => SpanStatus::Succeeded,
+        _ => SpanStatus::Failed, // Unknown status likely indicates corruption; default to Failed not Succeeded
     }
 }

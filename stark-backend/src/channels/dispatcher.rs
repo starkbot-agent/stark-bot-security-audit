@@ -16,7 +16,7 @@ use crate::models::session_message::MessageRole as DbMessageRole;
 use crate::models::{AgentSettings, CompletionStatus, SessionScope, DEFAULT_MAX_TOOL_ITERATIONS};
 use crate::qmd_memory::MemoryStore;
 use crate::telemetry::{
-    self, RolloutConfig, RolloutManager, SpanType,
+    self, Rollout, RolloutConfig, RolloutManager, SpanCollector, SpanType,
     RewardEmitter, TelemetryStore, Watchdog, WatchdogConfig, ResourceManager,
 };
 use crate::tools::{ToolConfig, ToolContext, ToolDefinition, ToolExecution, ToolRegistry};
@@ -385,7 +385,6 @@ impl MessageDispatcher {
             message.channel_id,
             Arc::clone(&self.broadcaster),
         );
-        drop(watchdog); // Heartbeat holds its own Arc clone
 
         // Install thread-local span collector for emit_* functions
         telemetry::set_active_collector(Arc::clone(&span_collector));
@@ -544,6 +543,10 @@ impl MessageDispatcher {
                 }
             }
         };
+
+        // Now that session is resolved, update rollout and span collector with real session_id
+        rollout.session_id = session.id;
+        span_collector.set_session(session.id);
 
         // Reset session state when a new message comes in on a previously-completed session
         // This allows the session to be reused for new requests
@@ -988,6 +991,12 @@ impl MessageDispatcher {
             serde_json::json!(message.text.clone()),
         );
 
+        // Transition rollout to Running now that setup is complete
+        self.rollout_manager.mark_running(&mut rollout);
+        self.broadcaster.broadcast(GatewayEvent::rollout_status_change(
+            message.channel_id, &rollout.rollout_id, "running", rollout.attempt_count(),
+        ));
+
         // Generate response with retry-aware loop.
         // On retryable failures (timeout, LLM error, context overflow), the rollout
         // manager creates a new attempt and we retry the entire generation.
@@ -1003,6 +1012,7 @@ impl MessageDispatcher {
                     &message,
                     archetype_id,
                     is_safe_mode,
+                    &watchdog,
                 ).await
             } else {
                 // Simple generation without tools - with x402 event emission
@@ -1032,9 +1042,17 @@ impl MessageDispatcher {
 
             // On success, break out of the retry loop
             match attempt_result {
-                Ok(response) => break Ok(response),
+                Ok(response) => {
+                    // Emit retry_succeeded reward if this wasn't the first attempt
+                    if rollout.attempt_count() > 1 {
+                        reward_emitter.retry_succeeded(rollout.attempt_count() - 1);
+                    }
+                    break Ok(response);
+                }
                 Err(ref error_str) => {
                     let error_msg = error_str.to_string();
+                    // Populate attempt stats before failing
+                    Self::populate_attempt_stats(&mut rollout, &span_collector);
                     let should_retry = self.rollout_manager.fail_attempt(
                         &mut rollout,
                         &error_msg,
@@ -1053,9 +1071,27 @@ impl MessageDispatcher {
                             message.channel_id,
                             &format!("Retrying... (attempt {}/{})", rollout.attempt_count(), rollout.config.max_attempts),
                         ));
+                        self.broadcaster.broadcast(GatewayEvent::rollout_status_change(
+                            message.channel_id, &rollout.rollout_id, "retrying", rollout.attempt_count(),
+                        ));
+                        // Dispatch OnRolloutRetry hook
+                        if let Some(hook_manager) = &self.hook_manager {
+                            use crate::hooks::{HookContext, HookEvent};
+                            let mut hook_ctx = HookContext::new(HookEvent::OnRolloutRetry)
+                                .with_channel(message.channel_id, Some(session.id))
+                                .with_error(error_msg.clone());
+                            hook_ctx.extra = serde_json::json!({
+                                "rollout_id": &rollout.rollout_id,
+                                "attempt": rollout.attempt_count(),
+                            });
+                            let _ = hook_manager.execute(HookEvent::OnRolloutRetry, &mut hook_ctx).await;
+                        }
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                         continue; // retry
                     } else {
+                        self.broadcaster.broadcast(GatewayEvent::rollout_status_change(
+                            message.channel_id, &rollout.rollout_id, "failed", rollout.attempt_count(),
+                        ));
                         break Err(error_msg);
                     }
                 }
@@ -1159,17 +1195,18 @@ impl MessageDispatcher {
                 // Complete execution tracking
                 self.execution_tracker.complete_execution(message.channel_id);
 
+                // Populate attempt stats from collected spans before completing rollout
+                Self::populate_attempt_stats(&mut rollout, &span_collector);
+
                 // Complete telemetry: succeed rollout and persist spans.
                 // Note: For the tool-loop path, session_completed reward is emitted
                 // in finalize_tool_loop with real counts. Only emit here for non-tool path.
                 self.rollout_manager.succeed_rollout(&mut rollout, response.clone());
+                self.broadcaster.broadcast(GatewayEvent::rollout_status_change(
+                    message.channel_id, &rollout.rollout_id, "succeeded", rollout.attempt_count(),
+                ));
                 if !use_tools {
-                    telemetry::emit_reward("session_completed", 2.0, serde_json::json!({
-                        "success": true,
-                        "iterations": 0,
-                        "tool_calls": 0,
-                        "path": "simple_generation",
-                    }));
+                    reward_emitter.session_completed(true, 0, 0, 1);
                 }
                 self.telemetry_store.persist_spans(&span_collector);
                 heartbeat_handle.abort();
@@ -1207,11 +1244,7 @@ impl MessageDispatcher {
                 // Only emit session_failed reward for non-tool path; tool path handles
                 // this in finalize_tool_loop with real iteration/tool counts.
                 if !use_tools {
-                    telemetry::emit_reward("session_failed", -1.0, serde_json::json!({
-                        "success": false,
-                        "error": &error,
-                        "path": "simple_generation",
-                    }));
+                    reward_emitter.session_completed(false, 0, 0, 1);
                 }
                 self.telemetry_store.persist_spans(&span_collector);
                 heartbeat_handle.abort();
@@ -1235,6 +1268,7 @@ impl MessageDispatcher {
         original_message: &NormalizedMessage,
         archetype_id: ArchetypeId,
         is_safe_mode: bool,
+        watchdog: &Arc<Watchdog>,
     ) -> Result<(String, bool), String> {
         // Load existing agent context or create new one
         let mut orchestrator = match self.db.get_agent_context(session_id) {
@@ -1415,12 +1449,12 @@ impl MessageDispatcher {
         if archetype.uses_native_tool_calling() {
             self.generate_with_native_tools_orchestrated(
                 client, messages, tools, tool_config, tool_context,
-                original_message, archetype, &mut orchestrator, session_id, is_safe_mode
+                original_message, archetype, &mut orchestrator, session_id, is_safe_mode, watchdog
             ).await
         } else {
             self.generate_with_text_tools_orchestrated(
                 client, messages, tools, tool_config, tool_context,
-                original_message, archetype, &mut orchestrator, session_id, is_safe_mode
+                original_message, archetype, &mut orchestrator, session_id, is_safe_mode, watchdog
             ).await
         }
     }
@@ -1450,6 +1484,28 @@ impl MessageDispatcher {
             subtype,
             tool_summaries,
         ));
+    }
+
+    /// Populate the current attempt's stats (tool_calls, llm_calls) from collected spans.
+    fn populate_attempt_stats(rollout: &mut Rollout, collector: &SpanCollector) {
+        let spans = collector.snapshot();
+        let mut tool_calls = 0u32;
+        let mut llm_calls = 0u32;
+
+        for span in &spans {
+            match span.span_type {
+                SpanType::ToolCall => tool_calls += 1,
+                SpanType::LlmCall => llm_calls += 1,
+                // Reward spans from tool_completed also count as tool observations,
+                // but the ToolCall span is the canonical count
+                _ => {}
+            }
+        }
+
+        if let Some(attempt) = rollout.current_attempt_mut() {
+            attempt.tool_calls = tool_calls;
+            attempt.llm_calls = llm_calls;
+        }
     }
 
     /// Auto-set the orchestrator's subtype if the skill specifies one.
@@ -1713,6 +1769,7 @@ impl MessageDispatcher {
         orchestrator: &mut Orchestrator,
         // The current tools visible to the AI this iteration (for subtype check)
         current_tools: &[ToolDefinition],
+        watchdog: &Arc<Watchdog>,
     ) -> ToolCallProcessed {
         let args_pretty = serde_json::to_string_pretty(tool_arguments)
             .unwrap_or_else(|_| tool_arguments.to_string());
@@ -1984,58 +2041,40 @@ impl MessageDispatcher {
                         crate::tools::ToolResult::error(error_msg)
                     } else {
                         let start = std::time::Instant::now();
-                        let tool_timeout = self.watchdog_config.timeout_for_tool(tool_name);
-                        let tool_result = match tokio::time::timeout(
-                            tool_timeout,
+                        let tool_result = match watchdog.guard_tool_call(
+                            tool_name,
                             self.tool_registry.execute(tool_name, tool_arguments.clone(), tool_context, Some(exec_config)),
                         ).await {
-                            Ok(result) => result,
-                            Err(_elapsed) => {
-                                let timeout_ms = tool_timeout.as_millis() as u64;
-                                log::warn!("[WATCHDOG] Tool '{}' timed out after {}ms", tool_name, timeout_ms);
-                                telemetry::emit_annotation("watchdog_timeout", serde_json::json!({
-                                    "tool_name": tool_name,
-                                    "timeout_ms": timeout_ms,
-                                }));
-                                crate::tools::ToolResult::error(format!(
-                                    "Tool '{}' timed out after {}s", tool_name, tool_timeout.as_secs()
-                                ))
-                            }
+                            Some(result) => result,
+                            None => crate::tools::ToolResult::error(format!(
+                                "Tool '{}' timed out after {}s",
+                                tool_name, watchdog.config().timeout_for_tool(tool_name).as_secs()
+                            )),
                         };
                         let duration_ms = start.elapsed().as_millis() as u64;
                         if tool_result.success {
                             orchestrator.record_tool_call(tool_name);
                         }
-                        // Emit tool telemetry
-                        telemetry::emit_tool_reward(tool_name, tool_result.success, duration_ms);
+                        watchdog.reward_emitter().tool_completed(tool_name, tool_result.success, duration_ms);
                         tool_result
                     }
                 } else {
                     let start = std::time::Instant::now();
-                    let tool_timeout = self.watchdog_config.timeout_for_tool(tool_name);
-                    let tool_result = match tokio::time::timeout(
-                        tool_timeout,
+                    let tool_result = match watchdog.guard_tool_call(
+                        tool_name,
                         self.tool_registry.execute(tool_name, tool_arguments.clone(), tool_context, Some(exec_config)),
                     ).await {
-                        Ok(result) => result,
-                        Err(_elapsed) => {
-                            let timeout_ms = tool_timeout.as_millis() as u64;
-                            log::warn!("[WATCHDOG] Tool '{}' timed out after {}ms", tool_name, timeout_ms);
-                            telemetry::emit_annotation("watchdog_timeout", serde_json::json!({
-                                "tool_name": tool_name,
-                                "timeout_ms": timeout_ms,
-                            }));
-                            crate::tools::ToolResult::error(format!(
-                                "Tool '{}' timed out after {}s", tool_name, tool_timeout.as_secs()
-                            ))
-                        }
+                        Some(result) => result,
+                        None => crate::tools::ToolResult::error(format!(
+                            "Tool '{}' timed out after {}s",
+                            tool_name, watchdog.config().timeout_for_tool(tool_name).as_secs()
+                        )),
                     };
                     let duration_ms = start.elapsed().as_millis() as u64;
                     if tool_result.success {
                         orchestrator.record_tool_call(tool_name);
                     }
-                    // Emit tool telemetry
-                    telemetry::emit_tool_reward(tool_name, tool_result.success, duration_ms);
+                    watchdog.reward_emitter().tool_completed(tool_name, tool_result.success, duration_ms);
                     tool_result
                 }
             }
@@ -2482,6 +2521,7 @@ impl MessageDispatcher {
         user_question_content: &str,
         max_tool_iterations: usize,
         iterations: usize,
+        watchdog: &Arc<Watchdog>,
     ) -> Result<(String, bool), String> {
         // Returns (response_text, already_delivered_via_say_to_user)
         // Clear active skill when the orchestrator loop completes
@@ -2547,25 +2587,14 @@ impl MessageDispatcher {
             }
         }
 
-        // Emit session_completed reward with real iteration/tool counts.
-        // This uses the thread-local span collector installed by dispatch().
+        // Emit session_completed reward with real iteration/tool counts
+        // via RewardEmitter for richer scoring (efficiency bonus, iteration penalty).
         let success = orchestrator_complete && !was_cancelled;
-        telemetry::emit_reward(
-            if success { "session_completed" } else { "session_failed" },
-            if success {
-                let efficiency = 1.0 - (iterations as f64 / max_tool_iterations as f64);
-                2.0 + efficiency.max(0.0)
-            } else {
-                -1.0
-            },
-            serde_json::json!({
-                "success": success,
-                "iterations": iterations,
-                "tool_calls": tool_call_log.len(),
-                "max_iterations": max_tool_iterations,
-                "was_cancelled": was_cancelled,
-                "waiting_for_user": waiting_for_user_response,
-            }),
+        watchdog.reward_emitter().session_completed(
+            success,
+            iterations as u32,
+            tool_call_log.len() as u32,
+            max_tool_iterations as u32,
         );
 
         // Build final return: (response, already_delivered_via_say_to_user)
@@ -2630,6 +2659,7 @@ impl MessageDispatcher {
         orchestrator: &mut Orchestrator,
         session_id: i64,
         is_safe_mode: bool,
+        watchdog: &Arc<Watchdog>,
     ) -> Result<(String, bool), String> {
         // Get max tool iterations from bot settings
         let max_tool_iterations = self.db.get_bot_settings()
@@ -3159,15 +3189,8 @@ impl MessageDispatcher {
                     repeated_count
                 );
 
-                // Emit loop detection reward signal
-                telemetry::emit_reward(
-                    "loop_detected",
-                    -2.0,
-                    serde_json::json!({
-                        "repeated_signatures": &current_signatures,
-                        "iteration": iterations,
-                    }),
-                );
+                // Emit loop detection reward signal via RewardEmitter
+                watchdog.reward_emitter().loop_detected(&current_signatures, iterations as u32);
 
                 // Create a feedback entry to guide the AI
                 let loop_warning = format!(
@@ -3244,6 +3267,7 @@ impl MessageDispatcher {
                     &mut tool_call_log,
                     orchestrator,
                     &current_tools,
+                    watchdog,
                 ).await;
 
                 // Update loop-level flags from the processed result
@@ -3319,6 +3343,7 @@ impl MessageDispatcher {
             &user_question_content,
             max_tool_iterations,
             iterations,
+            watchdog,
         )
     }
 
@@ -3335,6 +3360,7 @@ impl MessageDispatcher {
         orchestrator: &mut Orchestrator,
         session_id: i64,
         is_safe_mode: bool,
+        watchdog: &Arc<Watchdog>,
     ) -> Result<(String, bool), String> {
         // Get max tool iterations from bot settings
         let max_tool_iterations = self.db.get_bot_settings()
@@ -3543,14 +3569,10 @@ impl MessageDispatcher {
                                 tool_call.tool_name
                             );
 
-                            // Emit loop detection reward signal
-                            telemetry::emit_reward(
-                                "loop_detected",
-                                -2.0,
-                                serde_json::json!({
-                                    "tool_name": tool_call.tool_name,
-                                    "iteration": iterations,
-                                }),
+                            // Emit loop detection reward signal via RewardEmitter
+                            watchdog.reward_emitter().loop_detected(
+                                &[call_signature.clone()],
+                                iterations as u32,
                             );
 
                             // Feed back to conversation to guide the AI
@@ -3611,6 +3633,7 @@ impl MessageDispatcher {
                             &mut tool_call_log,
                             orchestrator,
                             &current_tools_snapshot,
+                            watchdog,
                         ).await;
 
                         // Update loop-level flags
@@ -3746,6 +3769,7 @@ impl MessageDispatcher {
             &user_question_content,
             max_tool_iterations,
             iterations,
+            watchdog,
         )
     }
 
@@ -4211,6 +4235,19 @@ impl MessageDispatcher {
                         "elapsed_secs": elapsed_secs,
                         "channel_id": channel_id,
                     }));
+
+                    // Dispatch OnWatchdogTimeout hook
+                    if let Some(hook_manager) = &self.hook_manager {
+                        use crate::hooks::{HookContext, HookEvent};
+                        let mut hook_ctx = HookContext::new(HookEvent::OnWatchdogTimeout)
+                            .with_channel(channel_id, None)
+                            .with_error(format!("LLM call timed out after {}s", llm_timeout.as_secs()));
+                        hook_ctx.extra = serde_json::json!({
+                            "operation": "llm_call",
+                            "timeout_secs": llm_timeout.as_secs(),
+                        });
+                        let _ = hook_manager.execute(HookEvent::OnWatchdogTimeout, &mut hook_ctx).await;
+                    }
 
                     return Err(crate::ai::AiError::new(
                         format!("LLM call timed out after {}s", llm_timeout.as_secs())

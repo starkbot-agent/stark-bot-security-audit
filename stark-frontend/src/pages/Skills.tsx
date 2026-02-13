@@ -32,7 +32,7 @@ export default function Skills() {
 
   // Editor state
   const [selectedSkill, setSelectedSkill] = useState<SkillDetail | null>(null);
-  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [, setIsLoadingDetail] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editedBody, setEditedBody] = useState('');
   const [isSaving, setIsSaving] = useState(false);

@@ -2013,8 +2013,8 @@ impl MessageDispatcher {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-            if is_safe_mode {
-                // Safe mode: always terminate — no multi-task flows
+            if is_safe_mode && (finished_task || orchestrator.task_queue_is_empty()) {
+                // Safe mode with finished_task or no task queue: terminate
                 log::info!("[ORCHESTRATED_LOOP] say_to_user terminating loop (safe_mode=true, finished_task={}, define_tasks_in_batch={})", finished_task, batch_state.define_tasks_replaced_queue);
                 processed.orchestrator_complete = true;
             } else if finished_task && !batch_state.define_tasks_replaced_queue && !batch_state.auto_completed_task {
@@ -2877,10 +2877,15 @@ impl MessageDispatcher {
                 recent_call_signatures.drain(0..recent_call_signatures.len() - SIGNATURE_HISTORY_SIZE);
             }
 
-            // say_to_user consecutive call detection: don't allow say_to_user twice in a row
+            // say_to_user consecutive call detection: if say_to_user is the ONLY tool called
+            // in two consecutive iterations (no real work being done), terminate the loop.
+            // Skip this check when there are pending tasks — the AI may need to send progress
+            // messages between tasks.
             let current_iteration_has_say_to_user = ai_response.tool_calls.iter().any(|c| c.name == "say_to_user");
-            if current_iteration_has_say_to_user && previous_iteration_had_say_to_user {
-                log::warn!("[SAY_TO_USER_LOOP] Detected consecutive say_to_user calls, terminating loop");
+            let only_say_to_user = current_iteration_has_say_to_user && ai_response.tool_calls.len() == 1;
+            let has_pending_tasks = !orchestrator.task_queue_is_empty() && !orchestrator.all_tasks_complete();
+            if only_say_to_user && previous_iteration_had_say_to_user && !has_pending_tasks {
+                log::warn!("[SAY_TO_USER_LOOP] Detected consecutive say_to_user-only calls with no pending tasks, terminating loop");
                 // Don't set final_summary - the message was already broadcast via tool_result
                 orchestrator_complete = true;
                 break;
@@ -2950,8 +2955,8 @@ impl MessageDispatcher {
                 break;
             }
 
-            // Update say_to_user tracking for next iteration
-            previous_iteration_had_say_to_user = current_iteration_has_say_to_user;
+            // Update say_to_user tracking for next iteration (only counts if say_to_user was the sole tool)
+            previous_iteration_had_say_to_user = only_say_to_user;
         }
 
         self.finalize_tool_loop(
@@ -3221,10 +3226,12 @@ impl MessageDispatcher {
                             recent_call_signatures.drain(0..recent_call_signatures.len() - SIGNATURE_HISTORY_SIZE);
                         }
 
-                        // say_to_user consecutive call detection: don't allow say_to_user twice in a row
+                        // say_to_user consecutive call detection: if say_to_user is the ONLY tool called
+                        // in two consecutive iterations with no pending tasks, terminate.
                         let current_iteration_has_say_to_user = tool_call.tool_name == "say_to_user";
-                        if current_iteration_has_say_to_user && previous_iteration_had_say_to_user {
-                            log::warn!("[TEXT_SAY_TO_USER_LOOP] Detected consecutive say_to_user calls, terminating loop");
+                        let has_pending_tasks = !orchestrator.task_queue_is_empty() && !orchestrator.all_tasks_complete();
+                        if current_iteration_has_say_to_user && previous_iteration_had_say_to_user && !has_pending_tasks {
+                            log::warn!("[TEXT_SAY_TO_USER_LOOP] Detected consecutive say_to_user calls with no pending tasks, terminating loop");
                             // Don't set final_response - the message was already broadcast via tool_result
                             orchestrator_complete = true;
                             break;

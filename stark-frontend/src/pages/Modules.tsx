@@ -42,7 +42,8 @@ export default function Modules() {
 
   const loadModules = async () => {
     try {
-      const data = await apiFetch<ModuleInfo[]>('/modules');
+      // Cache-bust to avoid stale browser-cached responses
+      const data = await apiFetch<ModuleInfo[]>(`/modules?_t=${Date.now()}`);
       setModules(data);
       // Check health of each service
       checkServiceHealth(data);
@@ -75,6 +76,19 @@ export default function Modules() {
         { method: 'POST', body: JSON.stringify({ action }) }
       );
       setMessage({ type: 'success', text: result.message || `Module ${action}ed successfully` });
+
+      // Optimistically update local state so the UI reflects the change immediately
+      if (action === 'enable' || action === 'disable') {
+        setModules((prev) =>
+          prev.map((m) =>
+            m.name === name
+              ? { ...m, enabled: action === 'enable', installed: true }
+              : m
+          )
+        );
+      }
+
+      // Also re-fetch from server for full sync
       await loadModules();
     } catch (err: any) {
       let errorMsg = err.message || `Failed to ${action} module`;

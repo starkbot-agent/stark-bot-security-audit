@@ -461,11 +461,15 @@ fn sign_message(private_key: &str, message: &str) -> Result<String, String> {
         .map_err(|e| format!("Invalid private key: {}", e))?;
 
     // Sign synchronously using the blocking runtime
-    let signature = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async {
+    let handle = tokio::runtime::Handle::current();
+    let signature = std::thread::spawn(move || {
+        handle.block_on(async {
             wallet.sign_message(message).await
         })
-    }).map_err(|e| format!("Failed to sign message: {}", e))?;
+    })
+    .join()
+    .expect("sign_message thread panicked")
+    .map_err(|e| format!("Failed to sign message: {}", e))?;
 
     Ok(format!("0x{}", hex::encode(signature.to_vec())))
 }

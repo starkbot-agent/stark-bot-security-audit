@@ -844,6 +844,7 @@ async fn main() -> std::io::Result<()> {
     } else {
         panic!("Config directory not found in ./config or ../config");
     };
+    log::info!("Starkbot v{}", env!("CARGO_PKG_VERSION"));
     log::info!("Using config directory: {:?}", config_dir);
     log::info!("Loading presets from config directory");
     tools::presets::load_presets(config_dir);

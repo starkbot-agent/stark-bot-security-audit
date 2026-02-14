@@ -71,8 +71,9 @@ impl super::Module for WalletMonitorModule {
     fn dashboard_data(&self, _db: &Database) -> Option<Value> {
         let client = Self::make_client();
 
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            handle.block_on(async {
                 let watchlist = client.list_watchlist().await.ok()?;
                 let stats = client.get_activity_stats().await.ok()?;
                 let filter = wallet_monitor_types::ActivityFilter {
@@ -116,6 +117,8 @@ impl super::Module for WalletMonitorModule {
                 }))
             })
         })
+        .join()
+        .expect("dashboard_data thread panicked")
     }
 }
 

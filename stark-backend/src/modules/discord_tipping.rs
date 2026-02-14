@@ -65,8 +65,9 @@ impl super::Module for DiscordTippingModule {
     fn dashboard_data(&self, _db: &Database) -> Option<Value> {
         let client = Self::make_client();
 
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            handle.block_on(async {
                 let all_profiles = client.list_all_profiles().await.ok()?;
                 let registered_count = all_profiles
                     .iter()
@@ -96,13 +97,16 @@ impl super::Module for DiscordTippingModule {
                 }))
             })
         })
+        .join()
+        .expect("dashboard_data thread panicked")
     }
 
     fn backup_data(&self, _db: &Database) -> Option<Value> {
         let client = Self::make_client();
 
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            handle.block_on(async {
                 let entries = client.backup_export().await.ok()?;
                 if entries.is_empty() {
                     return None;
@@ -121,6 +125,8 @@ impl super::Module for DiscordTippingModule {
                 Some(Value::Array(json_entries))
             })
         })
+        .join()
+        .expect("backup_data thread panicked")
     }
 
     fn restore_data(&self, _db: &Database, data: &Value) -> Result<(), String> {
@@ -148,10 +154,12 @@ impl super::Module for DiscordTippingModule {
 
         let client = Self::make_client();
 
-        let restored = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(client.backup_restore(backup_entries))
-        })?;
+        let handle = tokio::runtime::Handle::current();
+        let restored = std::thread::spawn(move || {
+            handle.block_on(client.backup_restore(backup_entries))
+        })
+        .join()
+        .expect("restore_data thread panicked")?;
 
         log::info!(
             "[discord_tipping] Restored {} registrations from backup",

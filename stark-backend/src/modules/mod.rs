@@ -5,6 +5,10 @@
 //! The main bot communicates with modules via JSON RPC over HTTP.
 
 pub mod discord_tipping;
+pub mod dynamic_module;
+pub mod dynamic_tool;
+pub mod loader;
+pub mod manifest;
 pub mod registry;
 pub mod wallet_monitor;
 
@@ -23,11 +27,11 @@ pub use registry::ModuleRegistry;
 /// performing backup/restore via RPC.
 pub trait Module: Send + Sync {
     /// Unique module name (used as identifier)
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     /// Human-readable description
-    fn description(&self) -> &'static str;
+    fn description(&self) -> &str;
     /// Semantic version
-    fn version(&self) -> &'static str;
+    fn version(&self) -> &str;
     /// Default port the service listens on
     fn default_port(&self) -> u16;
 
@@ -43,7 +47,7 @@ pub trait Module: Send + Sync {
     fn create_tools(&self) -> Vec<Arc<dyn Tool>>;
 
     /// Optional: skill markdown content to install
-    fn skill_content(&self) -> Option<&'static str> {
+    fn skill_content(&self) -> Option<&str> {
         None
     }
 

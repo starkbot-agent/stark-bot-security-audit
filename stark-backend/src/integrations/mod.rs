@@ -4,4 +4,5 @@
 
 pub mod discord_tipping_client;
 pub mod gmail;
+pub mod starkhub_client;
 pub mod wallet_monitor_client;

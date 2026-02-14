@@ -72,7 +72,7 @@ impl super::Module for WalletMonitorModule {
         let client = Self::make_client();
         let rt = tokio::runtime::Handle::try_current().ok()?;
 
-        let result = std::thread::scope(|_| {
+        std::thread::spawn(move || {
             rt.block_on(async {
                 let watchlist = client.list_watchlist().await.ok()?;
                 let stats = client.get_activity_stats().await.ok()?;
@@ -116,9 +116,9 @@ impl super::Module for WalletMonitorModule {
                     "recent_activity": recent_activity_json,
                 }))
             })
-        });
-
-        result
+        })
+        .join()
+        .ok()?
     }
 }
 

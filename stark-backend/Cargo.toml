@@ -1,6 +1,6 @@
 [package]
 name = "stark-backend"
-version = "0.5.36"
+version = "0.5.37"
 edition = "2024"
 default-run = "stark-backend"
 
@@ -87,6 +87,13 @@ strum = { version = "0.26", features = ["derive"] }
 
 # Skills ZIP upload
 zip = "0.6"
+
+# Module manifest parsing
+toml = "0.8"
+
+# Module archive extraction (for StarkHub remote install)
+flate2 = "1"
+tar = "0.4"
 
 # Module plugin shared types
 wallet-monitor-types = { path = "../wallet-monitor-types" }

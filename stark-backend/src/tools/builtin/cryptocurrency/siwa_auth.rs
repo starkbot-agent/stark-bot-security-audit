@@ -198,12 +198,14 @@ fn default_cache_as() -> String {
 }
 
 /// Response from the nonce endpoint
+/// Fields issued_at and expiration_time are optional — some servers (e.g. Conway Domains)
+/// only return a nonce. When missing, they are generated locally.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NonceResponse {
     nonce: String,
-    issued_at: String,
-    expiration_time: String,
+    issued_at: Option<String>,
+    expiration_time: Option<String>,
 }
 
 #[async_trait]
@@ -299,6 +301,16 @@ impl Tool for SiwaAuthTool {
         };
 
         // 4. Build SIWA message (or plain SIWE if no agent identity)
+        //    Generate issued_at / expiration_time locally if the server didn't provide them
+        let now = chrono::Utc::now();
+        let issued_at = nonce_data
+            .issued_at
+            .unwrap_or_else(|| now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        let expiration_time = nonce_data.expiration_time.unwrap_or_else(|| {
+            (now + chrono::Duration::minutes(10))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        });
+
         let message = build_siwa_message(&SiwaMessageFields {
             domain: params.domain.clone(),
             address: address.clone(),
@@ -307,8 +319,8 @@ impl Tool for SiwaAuthTool {
             agent_registry: agent_registry.clone(),
             chain_id: params.chain_id,
             nonce: nonce_data.nonce.clone(),
-            issued_at: nonce_data.issued_at.clone(),
-            expiration_time: nonce_data.expiration_time.clone(),
+            issued_at,
+            expiration_time,
             statement: params.statement.clone(),
         });
 

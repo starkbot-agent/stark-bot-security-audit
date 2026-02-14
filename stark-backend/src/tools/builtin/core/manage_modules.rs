@@ -1,7 +1,9 @@
-//! Module management tool — install, uninstall, enable, disable, list, and check status of plugins
+//! Module management tool — install, uninstall, enable, disable, list, search StarkHub, install remote
 //!
 //! Modules are standalone microservices. This tool manages the bot's
 //! record of which modules are installed/enabled and hot-registers their tools.
+//! It also integrates with StarkHub (hub.starkbot.ai) for discovering and
+//! downloading remote modules.
 
 use crate::tools::registry::Tool;
 use crate::tools::types::{
@@ -24,7 +26,7 @@ impl ManageModulesTool {
             "action".to_string(),
             PropertySchema {
                 schema_type: "string".to_string(),
-                description: "Action: 'list' available modules, 'install' a module, 'uninstall', 'enable', 'disable', or check 'status'".to_string(),
+                description: "Action: 'list' available modules, 'install' a builtin module, 'uninstall', 'enable', 'disable', 'status', 'search_hub' to search StarkHub, 'install_remote' to download from StarkHub, or 'update' to check for updates".to_string(),
                 default: None,
                 items: None,
                 enum_values: Some(vec![
@@ -34,6 +36,9 @@ impl ManageModulesTool {
                     "enable".to_string(),
                     "disable".to_string(),
                     "status".to_string(),
+                    "search_hub".to_string(),
+                    "install_remote".to_string(),
+                    "update".to_string(),
                 ]),
             },
         );
@@ -42,7 +47,18 @@ impl ManageModulesTool {
             "name".to_string(),
             PropertySchema {
                 schema_type: "string".to_string(),
-                description: "Module name (required for install, uninstall, enable, disable, status)".to_string(),
+                description: "Module name. For remote modules use '@username/slug' format (e.g. '@ethereumdegen/wallet-monitor'). For local modules, just the name.".to_string(),
+                default: None,
+                items: None,
+                enum_values: None,
+            },
+        );
+
+        properties.insert(
+            "query".to_string(),
+            PropertySchema {
+                schema_type: "string".to_string(),
+                description: "Search query for 'search_hub' action".to_string(),
                 default: None,
                 items: None,
                 enum_values: None,
@@ -52,7 +68,7 @@ impl ManageModulesTool {
         ManageModulesTool {
             definition: ToolDefinition {
                 name: "manage_modules".to_string(),
-                description: "Manage StarkBot plugin modules. Each module is a standalone microservice with its own database and dashboard. List available modules, install/uninstall, enable/disable, or check status.".to_string(),
+                description: "Manage StarkBot plugin modules. List, install/uninstall local modules, search StarkHub for remote modules, or download and install modules from StarkHub.".to_string(),
                 input_schema: ToolInputSchema {
                     schema_type: "object".to_string(),
                     properties,
@@ -69,6 +85,18 @@ impl ManageModulesTool {
 struct ModuleParams {
     action: String,
     name: Option<String>,
+    query: Option<String>,
+}
+
+/// Parse "@username/slug" into (username, slug).
+fn parse_remote_name(name: &str) -> Option<(&str, &str)> {
+    let name = name.strip_prefix('@').unwrap_or(name);
+    let parts: Vec<&str> = name.splitn(2, '/').collect();
+    if parts.len() == 2 {
+        Some((parts[0], parts[1]))
+    } else {
+        None
+    }
 }
 
 #[async_trait]
@@ -103,12 +131,17 @@ impl Tool for ManageModulesTool {
                         None => "not installed",
                     };
 
+                    let source = installed_entry
+                        .map(|e| e.source.as_str())
+                        .unwrap_or("builtin");
+
                     output.push_str(&format!(
-                        "**{}** v{} — {}\n  Status: {} | Service: {} | Tools: {} | Dashboard: {}\n\n",
+                        "**{}** v{} — {}\n  Status: {} | Source: {} | Service: {} | Tools: {} | Dashboard: {}\n\n",
                         module.name(),
                         module.version(),
                         module.description(),
                         status,
+                        source,
                         module.service_url(),
                         if module.has_tools() { "yes" } else { "no" },
                         if module.has_dashboard() { "yes" } else { "no" },
@@ -131,7 +164,7 @@ impl Tool for ManageModulesTool {
                 let registry = crate::modules::ModuleRegistry::new();
                 let module = match registry.get(name) {
                     Some(m) => m,
-                    None => return ToolResult::error(format!("Unknown module: '{}'. Use action='list' to see available modules.", name)),
+                    None => return ToolResult::error(format!("Unknown module: '{}'. Use action='list' to see available modules, or 'search_hub' to find remote modules.", name)),
                 };
 
                 match db.install_module(
@@ -236,6 +269,8 @@ impl Tool for ManageModulesTool {
                             "description": m.description,
                             "has_tools": m.has_tools,
                             "has_dashboard": m.has_dashboard,
+                            "source": m.source,
+                            "author": m.author,
                             "service_url": module.service_url(),
                             "installed_at": m.installed_at.to_rfc3339(),
                         }).to_string())
@@ -245,8 +280,205 @@ impl Tool for ManageModulesTool {
                 }
             }
 
+            "search_hub" => {
+                let query = match params.query.as_deref().or(params.name.as_deref()) {
+                    Some(q) => q,
+                    None => return ToolResult::error("'query' or 'name' is required for 'search_hub' action"),
+                };
+
+                let client = crate::integrations::starkhub_client::StarkHubClient::new();
+                match client.search_modules(query).await {
+                    Ok(modules) => {
+                        if modules.is_empty() {
+                            return ToolResult::success(format!("No modules found on StarkHub for '{}'", query));
+                        }
+
+                        let mut output = format!("**StarkHub Search Results for '{}'**\n\n", query);
+                        for m in &modules {
+                            let author = m.author_username.as_deref().unwrap_or(&m.author_address[..10]);
+                            output.push_str(&format!(
+                                "**{}** v{} by @{} — {}\n  Tools: [{}] | {} installs\n  Install: manage_modules(action=\"install_remote\", name=\"@{}/{}\")\n\n",
+                                m.name, m.version, author, m.description,
+                                m.tools_provided.join(", "),
+                                m.install_count,
+                                author, m.slug,
+                            ));
+                        }
+                        ToolResult::success(output)
+                    }
+                    Err(e) => ToolResult::error(format!("StarkHub search failed: {}", e)),
+                }
+            }
+
+            "install_remote" => {
+                let name = match params.name.as_deref() {
+                    Some(n) => n,
+                    None => return ToolResult::error("'name' is required for 'install_remote'. Use '@username/slug' format."),
+                };
+
+                let (username, slug) = match parse_remote_name(name) {
+                    Some(parts) => parts,
+                    None => return ToolResult::error("Invalid name format. Use '@username/slug' (e.g. '@ethereumdegen/wallet-monitor')"),
+                };
+
+                // Check if already installed
+                if db.is_module_installed(slug).unwrap_or(false) {
+                    return ToolResult::error(format!("Module '{}' is already installed. Use 'update' to check for newer versions.", slug));
+                }
+
+                let client = crate::integrations::starkhub_client::StarkHubClient::new();
+
+                // Get module info from StarkHub
+                let module_info = match client.get_module(username, slug).await {
+                    Ok(m) => m,
+                    Err(e) => return ToolResult::error(e),
+                };
+
+                let platform = crate::integrations::starkhub_client::current_platform();
+
+                // Get download info
+                let download_info = match client.get_download_info(username, slug, platform).await {
+                    Ok(d) => d,
+                    Err(e) => return ToolResult::error(format!(
+                        "No binary available for platform '{}': {}. Available platforms: {}",
+                        platform, e,
+                        module_info.platforms.iter().map(|p| p.platform.as_str()).collect::<Vec<_>>().join(", ")
+                    )),
+                };
+
+                // Download binary archive
+                let archive_bytes = match client.download_binary(&download_info.download_url).await {
+                    Ok(bytes) => bytes,
+                    Err(e) => return ToolResult::error(e),
+                };
+
+                // Verify SHA-256 checksum
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(&archive_bytes);
+                let computed_hash = format!("{:x}", hasher.finalize());
+
+                if computed_hash != download_info.sha256_checksum {
+                    return ToolResult::error(format!(
+                        "Checksum mismatch! Expected {}, got {}. Download may be corrupted.",
+                        download_info.sha256_checksum, computed_hash
+                    ));
+                }
+
+                // Extract to ~/.starkbot/modules/<slug>/
+                let modules_dir = std::env::var("STARKBOT_MODULES_DIR")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| {
+                        std::env::var("HOME")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                            .join(".starkbot")
+                            .join("modules")
+                    });
+
+                let module_dir = modules_dir.join(slug);
+                if let Err(e) = std::fs::create_dir_all(&module_dir) {
+                    return ToolResult::error(format!("Failed to create module directory: {}", e));
+                }
+
+                // Extract tar.gz archive
+                use std::io::Read;
+                let decoder = flate2::read::GzDecoder::new(&archive_bytes[..]);
+                let mut archive = tar::Archive::new(decoder);
+                if let Err(e) = archive.unpack(&module_dir) {
+                    return ToolResult::error(format!("Failed to extract module archive: {}", e));
+                }
+
+                // Make service binary executable
+                let manifest_path = module_dir.join("module.toml");
+                let binary_path = module_dir.join("bin").join(format!("{}-service", slug));
+
+                #[cfg(unix)]
+                if binary_path.exists() {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &binary_path,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+
+                // Register in database
+                let author_str = module_info.author.username
+                    .as_deref()
+                    .map(|u| format!("@{}", u))
+                    .unwrap_or_else(|| module_info.author.wallet_address.clone());
+
+                match db.install_module_full(
+                    slug,
+                    &module_info.description,
+                    &module_info.version,
+                    !module_info.tools_provided.is_empty(),
+                    false, // has_dashboard from manifest
+                    "starkhub",
+                    Some(&manifest_path.to_string_lossy()),
+                    Some(&binary_path.to_string_lossy()),
+                    Some(&author_str),
+                    Some(&computed_hash),
+                ) {
+                    Ok(_) => {
+                        let mut result = vec![
+                            format!("Module '@{}/{}' installed from StarkHub!", username, slug),
+                            format!("Version: {}", module_info.version),
+                            format!("Location: {}", module_dir.display()),
+                        ];
+                        if !module_info.tools_provided.is_empty() {
+                            result.push(format!("Tools: {}", module_info.tools_provided.join(", ")));
+                        }
+                        result.push("Restart StarkBot to activate the module and its tools.".to_string());
+                        ToolResult::success(result.join("\n"))
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to register module: {}", e)),
+                }
+            }
+
+            "update" => {
+                let name = match params.name.as_deref() {
+                    Some(n) => n,
+                    None => return ToolResult::error("'name' is required for 'update' action"),
+                };
+
+                let installed = match db.get_installed_module(name) {
+                    Ok(Some(m)) => m,
+                    Ok(None) => return ToolResult::error(format!("Module '{}' is not installed", name)),
+                    Err(e) => return ToolResult::error(format!("Failed to check module: {}", e)),
+                };
+
+                if installed.source != "starkhub" {
+                    return ToolResult::error(format!(
+                        "Module '{}' is a built-in module (source: {}). Only StarkHub modules can be updated.",
+                        name, installed.source
+                    ));
+                }
+
+                let author = installed.author.as_deref().unwrap_or("unknown");
+                let username = author.strip_prefix('@').unwrap_or(author);
+
+                let client = crate::integrations::starkhub_client::StarkHubClient::new();
+                match client.get_module(username, name).await {
+                    Ok(remote) => {
+                        if remote.version == installed.version {
+                            ToolResult::success(format!(
+                                "Module '{}' is up to date (v{}).",
+                                name, installed.version
+                            ))
+                        } else {
+                            ToolResult::success(format!(
+                                "Update available for '{}': v{} -> v{}\nRun: manage_modules(action=\"install_remote\", name=\"@{}/{}\")",
+                                name, installed.version, remote.version, username, name
+                            ))
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to check for updates: {}", e)),
+                }
+            }
+
             _ => ToolResult::error(format!(
-                "Unknown action: '{}'. Use 'list', 'install', 'uninstall', 'enable', 'disable', or 'status'.",
+                "Unknown action: '{}'. Use 'list', 'install', 'uninstall', 'enable', 'disable', 'status', 'search_hub', 'install_remote', or 'update'.",
                 params.action
             )),
         }

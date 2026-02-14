@@ -1290,11 +1290,31 @@ impl Database {
                 description TEXT NOT NULL,
                 has_tools INTEGER NOT NULL DEFAULT 0,
                 has_dashboard INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'builtin',
+                manifest_path TEXT,
+                binary_path TEXT,
+                author TEXT,
+                sha256_checksum TEXT,
                 installed_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )",
             [],
         )?;
+
+        // Migration: add new columns to existing installed_modules tables
+        // (safe to run repeatedly — SQLite ALTER TABLE ADD COLUMN is idempotent with IF NOT EXISTS-like behavior)
+        for col in &[
+            "source TEXT NOT NULL DEFAULT 'builtin'",
+            "manifest_path TEXT",
+            "binary_path TEXT",
+            "author TEXT",
+            "sha256_checksum TEXT",
+        ] {
+            let _ = conn.execute(
+                &format!("ALTER TABLE installed_modules ADD COLUMN {}", col),
+                [],
+            );
+        }
 
         // Keystore state - track backup/retrieval status per wallet
         conn.execute(

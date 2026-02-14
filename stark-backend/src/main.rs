@@ -758,25 +758,26 @@ async fn spa_fallback() -> actix_web::Result<NamedFile> {
 /// Auto-start module service binaries as child processes.
 ///
 /// Finds sibling binaries next to the current executable (same cargo target dir)
-/// and spawns them in the background. stdout/stderr are inherited so logs appear
-/// in the same terminal. Child processes are killed when the parent exits.
+/// and spawns them in the background. Also starts dynamic module services from
+/// `~/.starkbot/modules/`. stdout/stderr are inherited so logs appear in the
+/// same terminal. Child processes are killed when the parent exits.
 fn start_module_services() {
     let self_exe = std::env::current_exe().unwrap_or_default();
     let exe_dir = self_exe.parent().unwrap_or(std::path::Path::new("."));
 
-    let services = [
+    // Built-in services (compiled workspace members)
+    let builtin_services = [
         ("discord-tipping-service", 9101u16),
         ("wallet-monitor-service", 9100u16),
     ];
 
-    for (name, default_port) in &services {
+    for (name, default_port) in &builtin_services {
         let exe_path = exe_dir.join(name);
         if !exe_path.exists() {
             log::warn!("[MODULE] Service binary not found: {} — skipping auto-start. Run `cargo build` to build all workspace members.", exe_path.display());
             continue;
         }
 
-        // Check if the port is already in use (service might already be running)
         let port_env = match *name {
             "discord-tipping-service" => std::env::var("DISCORD_TIPPING_PORT")
                 .ok().and_then(|s| s.parse().ok()).unwrap_or(*default_port),
@@ -785,22 +786,46 @@ fn start_module_services() {
             _ => *default_port,
         };
 
-        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port_env)).is_ok() {
-            log::info!("[MODULE] {} already running on port {} — skipping", name, port_env);
+        start_service_binary(&exe_path, name, port_env);
+    }
+
+    // Dynamic module services from ~/.starkbot/modules/
+    let dynamic_services = modules::loader::get_dynamic_service_binaries();
+    for svc in &dynamic_services {
+        let port = svc.port_env_var.as_ref()
+            .and_then(|var| std::env::var(var).ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(svc.default_port);
+
+        if !svc.binary_path.exists() {
+            log::debug!(
+                "[MODULE] Dynamic module '{}' has no service binary at {} — skipping",
+                svc.name, svc.binary_path.display()
+            );
             continue;
         }
 
-        match std::process::Command::new(&exe_path)
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
-        {
-            Ok(_child) => {
-                log::info!("[MODULE] Started {} (port {})", name, port_env);
-            }
-            Err(e) => {
-                log::error!("[MODULE] Failed to start {}: {}", name, e);
-            }
+        start_service_binary(&svc.binary_path, &svc.name, port);
+    }
+}
+
+/// Start a single service binary if its port is not already in use.
+fn start_service_binary(exe_path: &std::path::Path, name: &str, port: u16) {
+    if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+        log::info!("[MODULE] {} already running on port {} — skipping", name, port);
+        return;
+    }
+
+    match std::process::Command::new(exe_path)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+    {
+        Ok(_child) => {
+            log::info!("[MODULE] Started {} (port {})", name, port);
+        }
+        Err(e) => {
+            log::error!("[MODULE] Failed to start {}: {}", name, e);
         }
     }
 }

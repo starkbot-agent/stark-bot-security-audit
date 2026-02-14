@@ -1,18 +1,15 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   Package,
   Check,
-  X,
   Trash2,
   Play,
   Pause,
-  Key,
-  Database,
   Wrench,
-  Activity,
   RefreshCw,
-  LayoutDashboard,
+  ExternalLink,
+  Globe,
+  Circle,
 } from 'lucide-react';
 import Card, { CardContent } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
@@ -24,22 +21,20 @@ interface ModuleInfo {
   version: string;
   installed: boolean;
   enabled: boolean;
-  has_db_tables: boolean;
   has_tools: boolean;
-  has_worker: boolean;
   has_dashboard: boolean;
-  required_api_keys: string[];
-  api_keys_met: boolean;
+  service_url: string;
+  service_port: number;
   installed_at: string | null;
 }
 
 export default function Modules() {
-  const navigate = useNavigate();
   const [modules, setModules] = useState<ModuleInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [reloadLoading, setReloadLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [serviceHealth, setServiceHealth] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     loadModules();
@@ -49,11 +44,26 @@ export default function Modules() {
     try {
       const data = await apiFetch<ModuleInfo[]>('/modules');
       setModules(data);
+      // Check health of each service
+      checkServiceHealth(data);
     } catch (err) {
       setMessage({ type: 'error', text: 'Failed to load modules' });
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const checkServiceHealth = async (mods: ModuleInfo[]) => {
+    const health: Record<string, boolean> = {};
+    for (const m of mods) {
+      try {
+        await apiFetch(`/modules/${encodeURIComponent(m.name)}/status`);
+        health[m.name] = true;
+      } catch {
+        health[m.name] = false;
+      }
+    }
+    setServiceHealth(health);
   };
 
   const performAction = async (name: string, action: string) => {
@@ -118,7 +128,8 @@ export default function Modules() {
         <div>
           <h1 className="text-2xl font-bold text-white mb-2">Modules</h1>
           <p className="text-slate-400">
-            Enable and manage optional modules. Modules add features like wallet monitoring, copy trading, and more.
+            Standalone microservices that extend StarkBot. Each module runs as its own binary
+            with a dedicated database, dashboard, and HTTP API.
           </p>
         </div>
         <Button
@@ -154,142 +165,152 @@ export default function Modules() {
             </CardContent>
           </Card>
         ) : (
-          modules.map((module) => (
-            <Card key={module.name} variant="elevated">
-              <CardContent>
-                <div className="flex items-start justify-between gap-4 py-2">
-                  {/* Left: Module info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-2">
-                      <Package className="w-5 h-5 text-stark-400 flex-shrink-0" />
-                      <h3 className="text-lg font-semibold text-white">{module.name}</h3>
-                      <span className="text-xs text-slate-500 bg-slate-700 px-2 py-0.5 rounded">
-                        v{module.version}
-                      </span>
-                      {module.installed && module.enabled ? (
-                        <span className="text-xs text-green-400 bg-green-500/20 px-2 py-0.5 rounded flex items-center gap-1">
-                          <Check className="w-3 h-3" /> Active
-                        </span>
-                      ) : (
-                        <span className="text-xs text-slate-400 bg-slate-700 px-2 py-0.5 rounded flex items-center gap-1">
-                          <Pause className="w-3 h-3" /> Disabled
-                        </span>
-                      )}
-                    </div>
+          modules.map((module) => {
+            const isHealthy = serviceHealth[module.name] === true;
+            const healthChecked = module.name in serviceHealth;
 
-                    <p className="text-slate-400 text-sm mb-3">{module.description}</p>
-
-                    {/* Features badges */}
-                    <div className="flex flex-wrap gap-2 mb-3">
-                      {module.has_db_tables && (
-                        <span className="text-xs text-slate-300 bg-slate-700/50 px-2 py-1 rounded flex items-center gap-1">
-                          <Database className="w-3 h-3" /> Database Tables
+            return (
+              <Card key={module.name} variant="elevated">
+                <CardContent>
+                  <div className="flex items-start justify-between gap-4 py-2">
+                    {/* Left: Module info */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3 mb-2">
+                        <Package className="w-5 h-5 text-stark-400 flex-shrink-0" />
+                        <h3 className="text-lg font-semibold text-white">
+                          {formatModuleName(module.name)}
+                        </h3>
+                        <span className="text-xs text-slate-500 bg-slate-700 px-2 py-0.5 rounded">
+                          v{module.version}
                         </span>
-                      )}
-                      {module.has_tools && (
-                        <span className="text-xs text-slate-300 bg-slate-700/50 px-2 py-1 rounded flex items-center gap-1">
-                          <Wrench className="w-3 h-3" /> AI Tools
-                        </span>
-                      )}
-                      {module.has_worker && (
-                        <span className="text-xs text-slate-300 bg-slate-700/50 px-2 py-1 rounded flex items-center gap-1">
-                          <Activity className="w-3 h-3" /> Background Worker
-                        </span>
-                      )}
-                    </div>
-
-                    {/* API Keys status */}
-                    {module.required_api_keys.length > 0 && (
-                      <div className="flex items-center gap-2 text-sm">
-                        <Key className="w-3.5 h-3.5 text-slate-500" />
-                        <span className="text-slate-500">Required keys:</span>
-                        {module.required_api_keys.map((key) => (
-                          <span
-                            key={key}
-                            className={`text-xs px-1.5 py-0.5 rounded ${
-                              module.api_keys_met
-                                ? 'bg-green-500/20 text-green-400'
-                                : 'bg-red-500/20 text-red-400'
-                            }`}
-                          >
-                            {key}
+                        {module.installed && module.enabled ? (
+                          <span className="text-xs text-green-400 bg-green-500/20 px-2 py-0.5 rounded flex items-center gap-1">
+                            <Check className="w-3 h-3" /> Active
                           </span>
-                        ))}
-                        {module.api_keys_met ? (
-                          <Check className="w-3.5 h-3.5 text-green-400" />
                         ) : (
-                          <X className="w-3.5 h-3.5 text-red-400" />
+                          <span className="text-xs text-slate-400 bg-slate-700 px-2 py-0.5 rounded flex items-center gap-1">
+                            <Pause className="w-3 h-3" /> Disabled
+                          </span>
                         )}
                       </div>
-                    )}
 
-                    {module.installed_at && (
-                      <p className="text-xs text-slate-500 mt-2">
-                        Installed: {new Date(module.installed_at).toLocaleDateString()}
-                      </p>
-                    )}
-                  </div>
+                      <p className="text-slate-400 text-sm mb-3">{module.description}</p>
 
-                  {/* Right: Actions */}
-                  <div className="flex flex-col gap-2 flex-shrink-0">
-                    {module.enabled && module.has_dashboard && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => navigate(`/modules/${encodeURIComponent(module.name)}`)}
-                      >
-                        <LayoutDashboard className="w-4 h-4 mr-1" />
-                        Dashboard
-                      </Button>
-                    )}
-                    {module.enabled ? (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        disabled={actionLoading !== null}
-                        isLoading={actionLoading === `${module.name}-disable`}
-                        onClick={() => performAction(module.name, 'disable')}
-                      >
-                        <Pause className="w-4 h-4 mr-1" />
-                        Disable
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        disabled={!module.api_keys_met || actionLoading !== null}
-                        isLoading={actionLoading === `${module.name}-enable`}
-                        onClick={() => performAction(module.name, 'enable')}
-                      >
-                        <Play className="w-4 h-4 mr-1" />
-                        Enable
-                      </Button>
-                    )}
-                    {module.installed && (
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        disabled={actionLoading !== null}
-                        isLoading={actionLoading === `${module.name}-uninstall`}
-                        onClick={() => performAction(module.name, 'uninstall')}
-                      >
-                        <Trash2 className="w-4 h-4 mr-1" />
-                        Uninstall
-                      </Button>
-                    )}
+                      {/* Feature badges */}
+                      <div className="flex flex-wrap gap-2 mb-3">
+                        {module.has_tools && (
+                          <span className="text-xs text-slate-300 bg-slate-700/50 px-2 py-1 rounded flex items-center gap-1">
+                            <Wrench className="w-3 h-3" /> AI Tools
+                          </span>
+                        )}
+                        {module.has_dashboard && (
+                          <span className="text-xs text-slate-300 bg-slate-700/50 px-2 py-1 rounded flex items-center gap-1">
+                            <Globe className="w-3 h-3" /> Dashboard
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Service status */}
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className="flex items-center gap-1.5">
+                          <Circle
+                            className={`w-2.5 h-2.5 ${
+                              !healthChecked
+                                ? 'text-slate-500'
+                                : isHealthy
+                                ? 'text-green-400 fill-green-400'
+                                : 'text-red-400 fill-red-400'
+                            }`}
+                          />
+                          <span className="text-slate-400">
+                            {!healthChecked
+                              ? 'Checking...'
+                              : isHealthy
+                              ? 'Service running'
+                              : 'Service offline'}
+                          </span>
+                        </div>
+                        <code className="text-xs text-slate-500 bg-slate-800 px-2 py-0.5 rounded">
+                          :{module.service_port}
+                        </code>
+                      </div>
+
+                      {module.installed_at && (
+                        <p className="text-xs text-slate-500 mt-2">
+                          Installed: {new Date(module.installed_at).toLocaleDateString()}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Right: Actions */}
+                    <div className="flex flex-col gap-2 flex-shrink-0">
+                      {module.has_dashboard && (
+                        isHealthy ? (
+                          <a
+                            href={`/modules/${encodeURIComponent(module.name)}`}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-300 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
+                          >
+                            <ExternalLink className="w-4 h-4" />
+                            Dashboard
+                          </a>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-500 bg-slate-800 rounded-lg cursor-not-allowed">
+                            <ExternalLink className="w-4 h-4" />
+                            Dashboard
+                          </span>
+                        )
+                      )}
+                      {module.enabled ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={actionLoading !== null}
+                          isLoading={actionLoading === `${module.name}-disable`}
+                          onClick={() => performAction(module.name, 'disable')}
+                        >
+                          <Pause className="w-4 h-4 mr-1" />
+                          Disable
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          disabled={actionLoading !== null}
+                          isLoading={actionLoading === `${module.name}-enable`}
+                          onClick={() => performAction(module.name, 'enable')}
+                        >
+                          <Play className="w-4 h-4 mr-1" />
+                          Enable
+                        </Button>
+                      )}
+                      {module.installed && (
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          disabled={actionLoading !== null}
+                          isLoading={actionLoading === `${module.name}-uninstall`}
+                          onClick={() => performAction(module.name, 'uninstall')}
+                        >
+                          <Trash2 className="w-4 h-4 mr-1" />
+                          Uninstall
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))
+                </CardContent>
+              </Card>
+            );
+          })
         )}
       </div>
 
       {/* Help text */}
       <div className="mt-8 p-4 bg-slate-800/50 rounded-lg border border-slate-700">
         <p className="text-sm text-slate-400">
-          Modules activate immediately when enabled. Use <strong className="text-slate-300">Reload Modules</strong> to
-          re-sync all module tools and workers. You can also manage modules via AI chat:
+          Each module runs as a standalone service with its own database and web dashboard.
+          Click <strong className="text-slate-300">Dashboard</strong> to open the module's
+          built-in UI. Use <strong className="text-slate-300">Reload Modules</strong> to
+          re-sync all module tools. You can also manage modules via AI chat:
           <code className="text-stark-400 bg-slate-700 px-1.5 py-0.5 rounded mx-1">
             manage_modules(action="enable", name="wallet_monitor")
           </code>
@@ -297,4 +318,11 @@ export default function Modules() {
       </div>
     </div>
   );
+}
+
+function formatModuleName(name: string): string {
+  return name
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
 }

@@ -1288,10 +1288,8 @@ impl Database {
                 enabled INTEGER NOT NULL DEFAULT 1,
                 version TEXT NOT NULL DEFAULT '1.0.0',
                 description TEXT NOT NULL,
-                has_db_tables INTEGER NOT NULL DEFAULT 0,
                 has_tools INTEGER NOT NULL DEFAULT 0,
-                has_worker INTEGER NOT NULL DEFAULT 0,
-                required_api_keys TEXT NOT NULL DEFAULT '[]',
+                has_dashboard INTEGER NOT NULL DEFAULT 0,
                 installed_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )",

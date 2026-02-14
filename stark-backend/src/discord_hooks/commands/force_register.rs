@@ -50,12 +50,12 @@ pub async fn execute(
     // Ensure target user profile exists
     // We don't know their username yet, so use a placeholder — it'll get
     // updated the next time they interact with the bot.
-    if let Err(e) = db::get_or_create_profile(db, target_user_id, "unknown") {
+    if let Err(e) = db::get_or_create_profile(db, target_user_id, "unknown").await {
         return Err(format!("Failed to create profile for user: {}", e));
     }
 
     // Check if address is already registered to a different user
-    if let Some(existing) = db::get_profile_by_address(db, address)? {
+    if let Some(existing) = db::get_profile_by_address(db, address).await? {
         if existing.discord_user_id == target_user_id {
             return Ok(format!(
                 "<@{}> already has this address registered: `{}`",
@@ -70,7 +70,7 @@ pub async fn execute(
     }
 
     // Register the address
-    db::register_address(db, target_user_id, address)?;
+    db::register_address(db, target_user_id, address).await?;
 
     log::info!(
         "Discord hooks: Admin {} force-registered address {} for user {}",

@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use walkdir::WalkDir;
 
-/// Default disk quota in megabytes (256 MB)
-const DEFAULT_QUOTA_MB: u64 = 256;
+/// Default disk quota in megabytes (1 GB)
+const DEFAULT_QUOTA_MB: u64 = 1024;
 
 /// Per-write size cap (5 MB)
 pub const MAX_WRITE_BYTES: usize = 5 * 1024 * 1024;

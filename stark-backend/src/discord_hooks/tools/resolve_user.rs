@@ -110,7 +110,7 @@ impl Tool for DiscordResolveUserTool {
         };
 
         // Query the database
-        match crate::discord_hooks::db::get_profile(db, &user_id) {
+        match crate::discord_hooks::db::get_profile(db, &user_id).await {
             Ok(Some(profile)) => {
                 if let Some(address) = profile.public_address {
                     // Auto-set recipient_address register so downstream tools
@@ -224,12 +224,13 @@ mod tests {
         // Init tables explicitly (no longer in base DB init — owned by discord_tipping module)
         crate::discord_hooks::db::init_tables(&db.conn()).unwrap();
         // Create + register a Discord profile
-        crate::discord_hooks::db::get_or_create_profile(&db, "111222333", "TestUser").unwrap();
+        crate::discord_hooks::db::get_or_create_profile(&db, "111222333", "TestUser").await.unwrap();
         crate::discord_hooks::db::register_address(
             &db,
             "111222333",
             "0x1234567890abcdef1234567890abcdef12345678",
         )
+        .await
         .unwrap();
 
         let context = ToolContext::new()

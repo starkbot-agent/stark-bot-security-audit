@@ -638,26 +638,14 @@ async fn restore_backup_data(
 
         for (module_name, data) in &backup_data.module_data {
             if let Some(module) = module_registry.get(module_name) {
-                // Ensure tables exist
-                if module.has_db_tables() {
-                    let conn = db.conn();
-                    if let Err(e) = module.init_tables(&conn) {
-                        log::warn!("[Keystore] Failed to init tables for module '{}': {}", module_name, e);
-                        continue;
-                    }
-                }
                 // Auto-install if not already installed
                 if !db.is_module_installed(module_name).unwrap_or(true) {
-                    let required_keys = module.required_api_keys();
-                    let key_strs: Vec<&str> = required_keys.iter().copied().collect();
                     let _ = db.install_module(
                         module_name,
                         module.description(),
                         module.version(),
-                        module.has_db_tables(),
                         module.has_tools(),
-                        module.has_worker(),
-                        &key_strs,
+                        module.has_dashboard(),
                     );
                 }
                 match module.restore_data(db, data) {
@@ -767,6 +755,56 @@ async fn spa_fallback() -> actix_web::Result<NamedFile> {
     }
 }
 
+/// Auto-start module service binaries as child processes.
+///
+/// Finds sibling binaries next to the current executable (same cargo target dir)
+/// and spawns them in the background. stdout/stderr are inherited so logs appear
+/// in the same terminal. Child processes are killed when the parent exits.
+fn start_module_services() {
+    let self_exe = std::env::current_exe().unwrap_or_default();
+    let exe_dir = self_exe.parent().unwrap_or(std::path::Path::new("."));
+
+    let services = [
+        ("discord-tipping-service", 9101u16),
+        ("wallet-monitor-service", 9100u16),
+    ];
+
+    for (name, default_port) in &services {
+        let exe_path = exe_dir.join(name);
+        if !exe_path.exists() {
+            log::warn!("[MODULE] Service binary not found: {} — skipping auto-start. Run `cargo build` to build all workspace members.", exe_path.display());
+            continue;
+        }
+
+        // Check if the port is already in use (service might already be running)
+        let port_env = match *name {
+            "discord-tipping-service" => std::env::var("DISCORD_TIPPING_PORT")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(*default_port),
+            "wallet-monitor-service" => std::env::var("WALLET_MONITOR_PORT")
+                .ok().and_then(|s| s.parse().ok()).unwrap_or(*default_port),
+            _ => *default_port,
+        };
+
+        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port_env)).is_ok() {
+            log::info!("[MODULE] {} already running on port {} — skipping", name, port_env);
+            continue;
+        }
+
+        match std::process::Command::new(&exe_path)
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(_child) => {
+                log::info!("[MODULE] Started {} (port {})", name, port_env);
+            }
+            Err(e) => {
+                log::error!("[MODULE] Failed to start {}: {}", name, e);
+            }
+        }
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
@@ -868,6 +906,15 @@ async fn main() -> std::io::Result<()> {
     // Initialize Module Registry (compile-time plugin registry)
     let module_registry = modules::ModuleRegistry::new();
 
+    // Auto-start module service binaries as child processes.
+    // The binaries live in the same directory as stark-backend (built by cargo workspace).
+    // They can also be run standalone. Set DISABLE_MODULE_SERVICES=1 to skip auto-start.
+    if std::env::var("DISABLE_MODULE_SERVICES").map(|v| v == "1" || v == "true").unwrap_or(false) {
+        log::info!("[MODULE] Module service auto-start disabled via DISABLE_MODULE_SERVICES");
+    } else {
+        start_module_services();
+    }
+
     // Auto-migration: if discord_user_profiles table exists but discord_tipping module
     // is not installed, auto-install it so existing deployments keep tipping on upgrade.
     {
@@ -883,16 +930,12 @@ async fn main() -> std::io::Result<()> {
         if table_exists && !db.is_module_installed("discord_tipping").unwrap_or(true) {
             log::info!("[MODULE] Auto-migrating: discord_user_profiles table found, installing discord_tipping module");
             if let Some(module) = module_registry.get("discord_tipping") {
-                let required_keys = module.required_api_keys();
-                let key_strs: Vec<&str> = required_keys.iter().copied().collect();
                 match db.install_module(
                     "discord_tipping",
                     module.description(),
                     module.version(),
-                    module.has_db_tables(),
                     module.has_tools(),
-                    module.has_worker(),
-                    &key_strs,
+                    module.has_dashboard(),
                 ) {
                     Ok(_) => log::info!("[MODULE] Auto-installed discord_tipping module (migration from hardcoded table)"),
                     Err(e) => log::warn!("[MODULE] Failed to auto-install discord_tipping: {}", e),
@@ -1132,21 +1175,9 @@ async fn main() -> std::io::Result<()> {
         });
     }
 
-    // Spawn workers for installed & enabled modules (track handles for hot-reload)
+    // Module workers are now managed by standalone services — no workers to spawn here.
+    // Keep an empty map in AppState for API compatibility.
     let module_workers = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<String, tokio::task::JoinHandle<()>>::new()));
-    {
-        let mut workers = module_workers.lock().await;
-        for entry in &installed_modules {
-            if entry.enabled {
-                if let Some(module) = module_registry.get(&entry.module_name) {
-                    if let Some(handle) = module.spawn_worker(db.clone(), broadcaster.clone(), dispatcher.clone()) {
-                        log::info!("[MODULE] Started worker for: {}", entry.module_name);
-                        workers.insert(entry.module_name.clone(), handle);
-                    }
-                }
-            }
-        }
-    }
 
     // Determine frontend dist path (check both locations)
     // Set DISABLE_FRONTEND=1 to disable static file serving (for separate dev server)

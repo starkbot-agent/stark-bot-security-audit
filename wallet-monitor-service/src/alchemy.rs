@@ -1,10 +1,9 @@
-//! Alchemy Enhanced API client for wallet monitoring
+//! Alchemy Enhanced API client for wallet monitoring.
 //!
 //! Supports Ethereum Mainnet and Base chains via `alchemy_getAssetTransfers`.
 
 use serde::{Deserialize, Serialize};
 
-/// Get the Alchemy base URL for a given chain
 pub fn alchemy_base_url(chain: &str, api_key: &str) -> String {
     match chain {
         "base" => format!("https://base-mainnet.g.alchemy.com/v2/{}", api_key),
@@ -12,7 +11,6 @@ pub fn alchemy_base_url(chain: &str, api_key: &str) -> String {
     }
 }
 
-/// A single asset transfer from the Alchemy response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetTransfer {
     #[serde(rename = "blockNum")]
@@ -65,14 +63,13 @@ struct BlockNumberResponse {
     error: Option<AlchemyError>,
 }
 
-/// Fetch asset transfers from Alchemy for a given address and block range
 pub async fn get_asset_transfers(
     client: &reqwest::Client,
     chain: &str,
     api_key: &str,
     address: &str,
     from_block: Option<i64>,
-    direction: &str, // "from" or "to"
+    direction: &str,
 ) -> Result<Vec<AssetTransfer>, String> {
     let url = alchemy_base_url(chain, api_key);
     let from_block_hex = from_block
@@ -96,7 +93,6 @@ pub async fn get_asset_transfers(
     let mut all_transfers = Vec::new();
     let mut page_key: Option<String> = None;
 
-    // Paginate through results
     loop {
         let mut request_params = params.clone();
         if let Some(ref pk) = page_key {
@@ -137,7 +133,6 @@ pub async fn get_asset_transfers(
             break;
         }
 
-        // Safety: max 5 pages per request to avoid runaway pagination
         if all_transfers.len() > 5000 {
             break;
         }
@@ -146,7 +141,6 @@ pub async fn get_asset_transfers(
     Ok(all_transfers)
 }
 
-/// Get the latest block number for a chain
 pub async fn get_block_number(
     client: &reqwest::Client,
     chain: &str,
@@ -184,7 +178,6 @@ pub async fn get_block_number(
     }
 }
 
-/// Parse hex block number from Alchemy transfer
 pub fn parse_block_number(hex: &str) -> i64 {
     let hex = hex.trim_start_matches("0x");
     i64::from_str_radix(hex, 16).unwrap_or(0)

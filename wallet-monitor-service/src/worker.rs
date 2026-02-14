@@ -1,79 +1,53 @@
-//! Background worker for wallet monitoring
+//! Background worker for wallet monitoring.
 //!
-//! Polls Alchemy Enhanced APIs every 60s for new activity on watched wallets.
-//! Detects swaps, estimates USD values, and dispatches alerts for large trades.
+//! Polls Alchemy Enhanced APIs every N seconds for new activity on watched wallets.
+//! Detects swaps, estimates USD values, and sends HTTP callbacks for large trades.
 
-use crate::db::Database;
-use crate::db::tables::wallet_monitor::WatchlistEntry;
-use crate::gateway::events::EventBroadcaster;
-use crate::gateway::protocol::GatewayEvent;
-use crate::integrations::alchemy;
+use crate::alchemy;
+use crate::db::Db;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use wallet_monitor_types::{LargeTradeAlert, WatchlistEntry};
 
-/// Cached token prices (symbol -> (usd_price, timestamp))
 type PriceCache = HashMap<String, (f64, std::time::Instant)>;
 
-const POLL_INTERVAL_SECS: u64 = 60;
 const PRICE_CACHE_TTL_SECS: u64 = 60;
 
-/// Start the wallet monitor background loop
 pub async fn run_worker(
-    db: Arc<Database>,
-    broadcaster: Arc<EventBroadcaster>,
+    db: Arc<Db>,
+    api_key: String,
+    poll_interval_secs: u64,
+    alert_callback_url: Option<String>,
+    last_tick_at: Arc<Mutex<Option<String>>>,
 ) {
-    log::info!("[WALLET_MONITOR] Worker started");
-    let client = crate::http::shared_client().clone();
+    log::info!("[WALLET_MONITOR] Worker started (poll interval: {}s)", poll_interval_secs);
+    let client = reqwest::Client::new();
     let price_cache: Arc<Mutex<PriceCache>> = Arc::new(Mutex::new(HashMap::new()));
 
     loop {
-        tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
+        tokio::time::sleep(Duration::from_secs(poll_interval_secs)).await;
 
-        // Check if module is still enabled
-        match db.is_module_enabled("wallet_monitor") {
-            Ok(true) => {}
-            Ok(false) => {
-                log::info!("[WALLET_MONITOR] Module disabled, stopping worker");
-                break;
+        match wallet_monitor_tick(&db, &client, &api_key, &price_cache, &alert_callback_url).await
+        {
+            Ok(_) => {
+                let now = chrono::Utc::now().to_rfc3339();
+                *last_tick_at.lock().await = Some(now);
             }
             Err(e) => {
-                log::warn!("[WALLET_MONITOR] Failed to check module status: {}", e);
-                continue;
+                log::error!("[WALLET_MONITOR] Tick error: {}", e);
             }
-        }
-
-        // Get API key
-        let api_key = match db.get_api_key("ALCHEMY_API_KEY") {
-            Ok(Some(key)) => key.api_key,
-            _ => {
-                log::debug!("[WALLET_MONITOR] No ALCHEMY_API_KEY configured, skipping tick");
-                continue;
-            }
-        };
-
-        if let Err(e) = wallet_monitor_tick(
-            &db,
-            &client,
-            &api_key,
-            &broadcaster,
-            &price_cache,
-        )
-        .await
-        {
-            log::error!("[WALLET_MONITOR] Tick error: {}", e);
         }
     }
 }
 
-/// Execute one monitoring tick — check all active wallets for new activity
 async fn wallet_monitor_tick(
-    db: &Database,
+    db: &Db,
     client: &reqwest::Client,
     api_key: &str,
-    broadcaster: &EventBroadcaster,
     price_cache: &Arc<Mutex<PriceCache>>,
+    alert_callback_url: &Option<String>,
 ) -> Result<(), String> {
     let watchlist = db
         .list_active_watchlist()
@@ -89,13 +63,13 @@ async fn wallet_monitor_tick(
     );
 
     let mut total_new = 0usize;
-    let mut large_trade_alerts: Vec<String> = Vec::new();
+    let mut alerts: Vec<LargeTradeAlert> = Vec::new();
 
     for entry in &watchlist {
         match process_wallet(db, client, api_key, entry, price_cache).await {
-            Ok((new_count, alerts)) => {
+            Ok((new_count, entry_alerts)) => {
                 total_new += new_count;
-                large_trade_alerts.extend(alerts);
+                alerts.extend(entry_alerts);
             }
             Err(e) => {
                 log::warn!(
@@ -108,29 +82,22 @@ async fn wallet_monitor_tick(
         }
     }
 
-    // Broadcast tick event
-    broadcaster.broadcast(GatewayEvent::custom(
-        "wallet_monitor_tick",
-        serde_json::json!({
-            "wallets_checked": watchlist.len(),
-            "new_transactions": total_new,
-            "large_trade_alerts": large_trade_alerts.len(),
-        }),
-    ));
-
-    // Broadcast large trade alerts
-    if !large_trade_alerts.is_empty() {
-        broadcaster.broadcast(GatewayEvent::custom(
-            "wallet_monitor_alert",
-            serde_json::json!({
-                "type": "large_trades",
-                "count": large_trade_alerts.len(),
-                "alerts": large_trade_alerts,
-            }),
-        ));
+    // Send alerts via HTTP callback if configured
+    if !alerts.is_empty() {
+        if let Some(url) = alert_callback_url {
+            for alert in &alerts {
+                if let Err(e) = client.post(url).json(alert).send().await {
+                    log::warn!("[WALLET_MONITOR] Failed to send alert callback: {}", e);
+                }
+            }
+        }
         log::warn!(
-            "[WALLET_MONITOR] LARGE TRADE ALERT: {}",
-            large_trade_alerts.join(" | ")
+            "[WALLET_MONITOR] LARGE TRADE ALERTS: {}",
+            alerts
+                .iter()
+                .map(|a| a.message.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ")
         );
     }
 
@@ -138,24 +105,22 @@ async fn wallet_monitor_tick(
         log::info!(
             "[WALLET_MONITOR] Tick complete: {} new transactions, {} large trades",
             total_new,
-            large_trade_alerts.len()
+            alerts.len()
         );
     }
 
     Ok(())
 }
 
-/// Process a single wallet — fetch new transfers and insert into DB
 async fn process_wallet(
-    db: &Database,
+    db: &Db,
     client: &reqwest::Client,
     api_key: &str,
     entry: &WatchlistEntry,
     price_cache: &Arc<Mutex<PriceCache>>,
-) -> Result<(usize, Vec<String>), String> {
+) -> Result<(usize, Vec<LargeTradeAlert>), String> {
     let from_block = entry.last_checked_block.map(|b| b + 1);
 
-    // Fetch outgoing and incoming transfers in parallel
     let (outgoing, incoming) = tokio::join!(
         alchemy::get_asset_transfers(client, &entry.chain, api_key, &entry.address, from_block, "from"),
         alchemy::get_asset_transfers(client, &entry.chain, api_key, &entry.address, from_block, "to"),
@@ -165,7 +130,6 @@ async fn process_wallet(
     let incoming = incoming?;
 
     if outgoing.is_empty() && incoming.is_empty() {
-        // Still update cursor to latest block to avoid re-scanning
         if let Ok(latest) = alchemy::get_block_number(client, &entry.chain, api_key).await {
             let _ = db.update_watchlist_cursor(entry.id, latest);
         }
@@ -205,7 +169,6 @@ async fn process_wallet(
             .and_then(|(t, _)| t.metadata.as_ref())
             .and_then(|m| m.block_timestamp.as_deref());
 
-        // Detect swap: tx has both outgoing and incoming ERC-20 transfers
         let has_outgoing_erc20 = transfers
             .iter()
             .any(|(t, dir)| *dir == "outgoing" && t.category == "erc20");
@@ -214,7 +177,6 @@ async fn process_wallet(
             .any(|(t, dir)| *dir == "incoming" && t.category == "erc20");
         let is_swap = has_outgoing_erc20 && has_incoming_erc20;
 
-        // Find swap details if applicable
         let (swap_from_token, swap_from_amount, swap_to_token, swap_to_amount) = if is_swap {
             let out_erc20 = transfers
                 .iter()
@@ -232,7 +194,6 @@ async fn process_wallet(
             (None, None, None, None)
         };
 
-        // Process each transfer in the tx
         for (transfer, direction) in transfers {
             let activity_type = if is_swap {
                 "swap".to_string()
@@ -247,7 +208,6 @@ async fn process_wallet(
 
             let amount_formatted = transfer.value.map(|v| format!("{}", v));
 
-            // Estimate USD value
             let usd_value = estimate_usd_value(
                 client,
                 transfer.asset.as_deref(),
@@ -306,7 +266,7 @@ async fn process_wallet(
                             .map(|v| format!("${:.0}", v))
                             .unwrap_or_else(|| "unknown".to_string());
 
-                        let alert = if is_swap {
+                        let message = if is_swap {
                             format!(
                                 "**{}** ({}) swapped {} {} -> {} {} ({}) on {} [tx: {}]",
                                 label,
@@ -339,15 +299,30 @@ async fn process_wallet(
                                 tx_hash
                             )
                         };
-                        alerts.push(alert);
+
+                        alerts.push(LargeTradeAlert {
+                            watchlist_id: entry.id,
+                            address: entry.address.clone(),
+                            label: entry.label.clone(),
+                            chain: entry.chain.clone(),
+                            tx_hash: tx_hash.clone(),
+                            activity_type: activity_type.clone(),
+                            usd_value,
+                            asset_symbol: transfer.asset.clone(),
+                            amount_formatted: amount_formatted.clone(),
+                            swap_from_token: swap_from_token.clone(),
+                            swap_from_amount: swap_from_amount.clone(),
+                            swap_to_token: swap_to_token.clone(),
+                            swap_to_amount: swap_to_amount.clone(),
+                            message,
+                        });
                     }
                 }
-                _ => {} // Duplicate or error, skip
+                _ => {}
             }
         }
     }
 
-    // Update cursor
     if max_block > entry.last_checked_block.unwrap_or(0) {
         let _ = db.update_watchlist_cursor(entry.id, max_block);
     }
@@ -355,7 +330,6 @@ async fn process_wallet(
     Ok((new_count, alerts))
 }
 
-/// Estimate USD value for a transfer using DexScreener public API
 async fn estimate_usd_value(
     client: &reqwest::Client,
     asset: Option<&str>,
@@ -370,13 +344,11 @@ async fn estimate_usd_value(
 
     let symbol = asset.unwrap_or("ETH").to_uppercase();
 
-    // Check stablecoins first
     match symbol.as_str() {
         "USDC" | "USDT" | "DAI" | "BUSD" | "TUSD" | "FRAX" => return Some(value),
         _ => {}
     }
 
-    // Check cache
     {
         let cache = price_cache.lock().await;
         if let Some((price, ts)) = cache.get(&symbol) {
@@ -386,7 +358,6 @@ async fn estimate_usd_value(
         }
     }
 
-    // Fetch price from DexScreener
     let dex_chain = match chain {
         "base" => "base",
         _ => "ethereum",
@@ -423,12 +394,10 @@ async fn estimate_usd_value(
         cache.insert(symbol, (price, std::time::Instant::now()));
         Some(value * price)
     } else {
-        // Fallback: try common known prices
         let fallback_price = match symbol.as_str() {
-            "ETH" | "WETH" => Some(2500.0), // rough fallback
+            "ETH" | "WETH" => Some(2500.0),
             _ => None,
         };
         fallback_price.map(|p| value * p)
     }
 }
-

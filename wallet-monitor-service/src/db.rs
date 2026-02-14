@@ -1,146 +1,96 @@
-//! Database operations for wallet_watchlist and wallet_activity tables (wallet monitor plugin)
+//! SQLite database operations for the wallet monitor service.
 
-use crate::db::Database;
-use rusqlite::Result as SqliteResult;
-use serde::{Deserialize, Serialize};
+use rusqlite::{Connection, Result as SqliteResult};
+use std::sync::Mutex;
+use wallet_monitor_types::*;
 
-/// A watched wallet entry
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WatchlistEntry {
-    pub id: i64,
-    pub address: String,
-    pub label: Option<String>,
-    pub chain: String,
-    pub monitor_enabled: bool,
-    pub large_trade_threshold_usd: f64,
-    pub copy_trade_enabled: bool,
-    pub copy_trade_max_usd: Option<f64>,
-    pub last_checked_block: Option<i64>,
-    pub last_checked_at: Option<String>,
-    pub notes: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+pub struct Db {
+    conn: Mutex<Connection>,
 }
 
-/// An activity entry from a watched wallet
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActivityEntry {
-    pub id: i64,
-    pub watchlist_id: i64,
-    pub chain: String,
-    pub tx_hash: String,
-    pub block_number: i64,
-    pub block_timestamp: Option<String>,
-    pub from_address: String,
-    pub to_address: String,
-    pub activity_type: String,
-    pub asset_symbol: Option<String>,
-    pub asset_address: Option<String>,
-    pub amount_raw: Option<String>,
-    pub amount_formatted: Option<String>,
-    pub usd_value: Option<f64>,
-    pub is_large_trade: bool,
-    pub swap_from_token: Option<String>,
-    pub swap_from_amount: Option<String>,
-    pub swap_to_token: Option<String>,
-    pub swap_to_amount: Option<String>,
-    pub raw_data: Option<String>,
-    pub created_at: String,
-}
+impl Db {
+    pub fn open(path: &str) -> SqliteResult<Self> {
+        let conn = if path == ":memory:" {
+            Connection::open_in_memory()?
+        } else {
+            Connection::open(path)?
+        };
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
+        db.create_tables()?;
+        Ok(db)
+    }
 
-/// Filters for querying activity
-#[derive(Debug, Default)]
-pub struct ActivityFilter {
-    pub watchlist_id: Option<i64>,
-    pub address: Option<String>,
-    pub activity_type: Option<String>,
-    pub chain: Option<String>,
-    pub large_only: bool,
-    pub limit: Option<usize>,
-}
+    fn create_tables(&self) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wallet_watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address TEXT NOT NULL,
+                label TEXT,
+                chain TEXT NOT NULL DEFAULT 'mainnet',
+                monitor_enabled INTEGER NOT NULL DEFAULT 1,
+                large_trade_threshold_usd REAL NOT NULL DEFAULT 10000.0,
+                copy_trade_enabled INTEGER NOT NULL DEFAULT 0,
+                copy_trade_max_usd REAL,
+                last_checked_block INTEGER,
+                last_checked_at TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(address, chain)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wallet_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                watchlist_id INTEGER NOT NULL,
+                chain TEXT NOT NULL,
+                tx_hash TEXT NOT NULL,
+                block_number INTEGER NOT NULL,
+                block_timestamp TEXT,
+                from_address TEXT NOT NULL,
+                to_address TEXT NOT NULL,
+                activity_type TEXT NOT NULL,
+                asset_symbol TEXT,
+                asset_address TEXT,
+                amount_raw TEXT,
+                amount_formatted TEXT,
+                usd_value REAL,
+                is_large_trade INTEGER NOT NULL DEFAULT 0,
+                swap_from_token TEXT,
+                swap_from_amount TEXT,
+                swap_to_token TEXT,
+                swap_to_amount TEXT,
+                raw_data TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (watchlist_id) REFERENCES wallet_watchlist(id) ON DELETE CASCADE,
+                UNIQUE(tx_hash, watchlist_id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wallet_activity_watchlist ON wallet_activity(watchlist_id, block_number DESC)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wallet_activity_large ON wallet_activity(is_large_trade, created_at DESC)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wallet_activity_chain ON wallet_activity(chain, block_number DESC)",
+            [],
+        )?;
+        Ok(())
+    }
 
-/// Stats about wallet activity
-#[derive(Debug, Serialize)]
-pub struct ActivityStats {
-    pub total_transactions: i64,
-    pub large_trades: i64,
-    pub watched_wallets: i64,
-    pub active_wallets: i64,
-}
-
-/// Create the wallet monitor tables (called by module init_tables)
-pub fn create_tables(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS wallet_watchlist (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            address TEXT NOT NULL,
-            label TEXT,
-            chain TEXT NOT NULL DEFAULT 'mainnet',
-            monitor_enabled INTEGER NOT NULL DEFAULT 1,
-            large_trade_threshold_usd REAL NOT NULL DEFAULT 10000.0,
-            copy_trade_enabled INTEGER NOT NULL DEFAULT 0,
-            copy_trade_max_usd REAL,
-            last_checked_block INTEGER,
-            last_checked_at TEXT,
-            notes TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(address, chain)
-        )",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS wallet_activity (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            watchlist_id INTEGER NOT NULL,
-            chain TEXT NOT NULL,
-            tx_hash TEXT NOT NULL,
-            block_number INTEGER NOT NULL,
-            block_timestamp TEXT,
-            from_address TEXT NOT NULL,
-            to_address TEXT NOT NULL,
-            activity_type TEXT NOT NULL,
-            asset_symbol TEXT,
-            asset_address TEXT,
-            amount_raw TEXT,
-            amount_formatted TEXT,
-            usd_value REAL,
-            is_large_trade INTEGER NOT NULL DEFAULT 0,
-            swap_from_token TEXT,
-            swap_from_amount TEXT,
-            swap_to_token TEXT,
-            swap_to_amount TEXT,
-            raw_data TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (watchlist_id) REFERENCES wallet_watchlist(id) ON DELETE CASCADE,
-            UNIQUE(tx_hash, watchlist_id)
-        )",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wallet_activity_watchlist ON wallet_activity(watchlist_id, block_number DESC)",
-        [],
-    )?;
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wallet_activity_large ON wallet_activity(is_large_trade, created_at DESC)",
-        [],
-    )?;
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wallet_activity_chain ON wallet_activity(chain, block_number DESC)",
-        [],
-    )?;
-
-    Ok(())
-}
-
-impl Database {
     // =====================================================
     // Watchlist Operations
     // =====================================================
 
-    /// Add a wallet to the watchlist
     pub fn add_to_watchlist(
         &self,
         address: &str,
@@ -148,7 +98,7 @@ impl Database {
         chain: &str,
         threshold_usd: f64,
     ) -> SqliteResult<WatchlistEntry> {
-        let conn = self.conn();
+        let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
         let addr = address.to_lowercase();
 
@@ -176,34 +126,14 @@ impl Database {
         })
     }
 
-    /// Remove a wallet from the watchlist
     pub fn remove_from_watchlist(&self, id: i64) -> SqliteResult<bool> {
-        let conn = self.conn();
+        let conn = self.conn.lock().unwrap();
         let rows = conn.execute("DELETE FROM wallet_watchlist WHERE id = ?1", [id])?;
         Ok(rows > 0)
     }
 
-    /// Get a single watchlist entry
-    pub fn get_watchlist_entry(&self, id: i64) -> SqliteResult<Option<WatchlistEntry>> {
-        let conn = self.conn();
-        let result = conn.query_row(
-            "SELECT id, address, label, chain, monitor_enabled, large_trade_threshold_usd,
-                    copy_trade_enabled, copy_trade_max_usd, last_checked_block, last_checked_at,
-                    notes, created_at, updated_at
-             FROM wallet_watchlist WHERE id = ?1",
-            [id],
-            |row| Self::row_to_watchlist_entry(row),
-        );
-        match result {
-            Ok(entry) => Ok(Some(entry)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// List all watchlist entries
     pub fn list_watchlist(&self) -> SqliteResult<Vec<WatchlistEntry>> {
-        let conn = self.conn();
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, address, label, chain, monitor_enabled, large_trade_threshold_usd,
                     copy_trade_enabled, copy_trade_max_usd, last_checked_block, last_checked_at,
@@ -211,15 +141,14 @@ impl Database {
              FROM wallet_watchlist ORDER BY created_at ASC",
         )?;
         let entries = stmt
-            .query_map([], |row| Self::row_to_watchlist_entry(row))?
+            .query_map([], |row| row_to_watchlist_entry(row))?
             .filter_map(|r| r.ok())
             .collect();
         Ok(entries)
     }
 
-    /// List only active (monitor_enabled=1) watchlist entries
     pub fn list_active_watchlist(&self) -> SqliteResult<Vec<WatchlistEntry>> {
-        let conn = self.conn();
+        let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, address, label, chain, monitor_enabled, large_trade_threshold_usd,
                     copy_trade_enabled, copy_trade_max_usd, last_checked_block, last_checked_at,
@@ -227,13 +156,12 @@ impl Database {
              FROM wallet_watchlist WHERE monitor_enabled = 1 ORDER BY created_at ASC",
         )?;
         let entries = stmt
-            .query_map([], |row| Self::row_to_watchlist_entry(row))?
+            .query_map([], |row| row_to_watchlist_entry(row))?
             .filter_map(|r| r.ok())
             .collect();
         Ok(entries)
     }
 
-    /// Update a watchlist entry's fields
     pub fn update_watchlist_entry(
         &self,
         id: i64,
@@ -242,7 +170,7 @@ impl Database {
         monitor_enabled: Option<bool>,
         notes: Option<&str>,
     ) -> SqliteResult<bool> {
-        let conn = self.conn();
+        let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
 
         let mut updates = vec!["updated_at = ?1".to_string()];
@@ -282,9 +210,8 @@ impl Database {
         Ok(rows > 0)
     }
 
-    /// Update the last_checked_block cursor for a watchlist entry
     pub fn update_watchlist_cursor(&self, id: i64, block_number: i64) -> SqliteResult<()> {
-        let conn = self.conn();
+        let conn = self.conn.lock().unwrap();
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE wallet_watchlist SET last_checked_block = ?1, last_checked_at = ?2, updated_at = ?2 WHERE id = ?3",
@@ -297,7 +224,6 @@ impl Database {
     // Activity Operations
     // =====================================================
 
-    /// Insert an activity entry (ON CONFLICT ignore for dedup)
     pub fn insert_activity(
         &self,
         watchlist_id: i64,
@@ -320,7 +246,7 @@ impl Database {
         swap_to_amount: Option<&str>,
         raw_data: Option<&str>,
     ) -> SqliteResult<i64> {
-        let conn = self.conn();
+        let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO wallet_activity (
                 watchlist_id, chain, tx_hash, block_number, block_timestamp,
@@ -338,12 +264,10 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Query activity with filters
     pub fn query_activity(&self, filter: &ActivityFilter) -> SqliteResult<Vec<ActivityEntry>> {
-        let conn = self.conn();
+        let conn = self.conn.lock().unwrap();
         let mut conditions = vec!["1=1".to_string()];
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        #[allow(unused_assignments)]
         let mut param_idx = 1u32;
 
         if let Some(wid) = filter.watchlist_id {
@@ -372,6 +296,7 @@ impl Database {
         if filter.large_only {
             conditions.push("a.is_large_trade = 1".to_string());
         }
+        let _ = param_idx; // suppress unused warning
 
         let limit = filter.limit.unwrap_or(50).min(200);
         let sql = format!(
@@ -391,24 +316,14 @@ impl Database {
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
         let entries = stmt
-            .query_map(param_refs.as_slice(), |row| Self::row_to_activity_entry(row))?
+            .query_map(param_refs.as_slice(), |row| row_to_activity_entry(row))?
             .filter_map(|r| r.ok())
             .collect();
         Ok(entries)
     }
 
-    /// Get recent large trades
-    pub fn get_recent_large_trades(&self, limit: usize) -> SqliteResult<Vec<ActivityEntry>> {
-        self.query_activity(&ActivityFilter {
-            large_only: true,
-            limit: Some(limit),
-            ..Default::default()
-        })
-    }
-
-    /// Get activity stats
     pub fn get_activity_stats(&self) -> SqliteResult<ActivityStats> {
-        let conn = self.conn();
+        let conn = self.conn.lock().unwrap();
         let total_transactions: i64 = conn
             .query_row("SELECT COUNT(*) FROM wallet_activity", [], |row| row.get(0))
             .unwrap_or(0);
@@ -437,48 +352,48 @@ impl Database {
             active_wallets,
         })
     }
+}
 
-    fn row_to_watchlist_entry(row: &rusqlite::Row) -> rusqlite::Result<WatchlistEntry> {
-        Ok(WatchlistEntry {
-            id: row.get(0)?,
-            address: row.get(1)?,
-            label: row.get(2)?,
-            chain: row.get(3)?,
-            monitor_enabled: row.get(4)?,
-            large_trade_threshold_usd: row.get(5)?,
-            copy_trade_enabled: row.get(6)?,
-            copy_trade_max_usd: row.get(7)?,
-            last_checked_block: row.get(8)?,
-            last_checked_at: row.get(9)?,
-            notes: row.get(10)?,
-            created_at: row.get(11)?,
-            updated_at: row.get(12)?,
-        })
-    }
+fn row_to_watchlist_entry(row: &rusqlite::Row) -> rusqlite::Result<WatchlistEntry> {
+    Ok(WatchlistEntry {
+        id: row.get(0)?,
+        address: row.get(1)?,
+        label: row.get(2)?,
+        chain: row.get(3)?,
+        monitor_enabled: row.get(4)?,
+        large_trade_threshold_usd: row.get(5)?,
+        copy_trade_enabled: row.get(6)?,
+        copy_trade_max_usd: row.get(7)?,
+        last_checked_block: row.get(8)?,
+        last_checked_at: row.get(9)?,
+        notes: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
 
-    fn row_to_activity_entry(row: &rusqlite::Row) -> rusqlite::Result<ActivityEntry> {
-        Ok(ActivityEntry {
-            id: row.get(0)?,
-            watchlist_id: row.get(1)?,
-            chain: row.get(2)?,
-            tx_hash: row.get(3)?,
-            block_number: row.get(4)?,
-            block_timestamp: row.get(5)?,
-            from_address: row.get(6)?,
-            to_address: row.get(7)?,
-            activity_type: row.get(8)?,
-            asset_symbol: row.get(9)?,
-            asset_address: row.get(10)?,
-            amount_raw: row.get(11)?,
-            amount_formatted: row.get(12)?,
-            usd_value: row.get(13)?,
-            is_large_trade: row.get(14)?,
-            swap_from_token: row.get(15)?,
-            swap_from_amount: row.get(16)?,
-            swap_to_token: row.get(17)?,
-            swap_to_amount: row.get(18)?,
-            raw_data: row.get(19)?,
-            created_at: row.get(20)?,
-        })
-    }
+fn row_to_activity_entry(row: &rusqlite::Row) -> rusqlite::Result<ActivityEntry> {
+    Ok(ActivityEntry {
+        id: row.get(0)?,
+        watchlist_id: row.get(1)?,
+        chain: row.get(2)?,
+        tx_hash: row.get(3)?,
+        block_number: row.get(4)?,
+        block_timestamp: row.get(5)?,
+        from_address: row.get(6)?,
+        to_address: row.get(7)?,
+        activity_type: row.get(8)?,
+        asset_symbol: row.get(9)?,
+        asset_address: row.get(10)?,
+        amount_raw: row.get(11)?,
+        amount_formatted: row.get(12)?,
+        usd_value: row.get(13)?,
+        is_large_trade: row.get(14)?,
+        swap_from_token: row.get(15)?,
+        swap_from_amount: row.get(16)?,
+        swap_to_token: row.get(17)?,
+        swap_to_amount: row.get(18)?,
+        raw_data: row.get(19)?,
+        created_at: row.get(20)?,
+    })
 }

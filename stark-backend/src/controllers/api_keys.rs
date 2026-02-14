@@ -1847,26 +1847,14 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
         // Restore each module's data
         for (module_name, data) in &backup_data.module_data {
             if let Some(module) = module_registry.get(module_name) {
-                // Ensure the module's tables exist before restoring
-                if module.has_db_tables() {
-                    let conn = state.db.conn();
-                    if let Err(e) = module.init_tables(&conn) {
-                        log::warn!("Failed to init tables for module '{}' during restore: {}", module_name, e);
-                        continue;
-                    }
-                }
                 // Auto-install the module if not already installed
                 if !state.db.is_module_installed(module_name).unwrap_or(true) {
-                    let required_keys = module.required_api_keys();
-                    let key_strs: Vec<&str> = required_keys.iter().copied().collect();
                     let _ = state.db.install_module(
                         module_name,
                         module.description(),
                         module.version(),
-                        module.has_db_tables(),
                         module.has_tools(),
-                        module.has_worker(),
-                        &key_strs,
+                        module.has_dashboard(),
                     );
                 }
                 match module.restore_data(&state.db, data) {

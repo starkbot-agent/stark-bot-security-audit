@@ -2130,10 +2130,22 @@ impl MessageDispatcher {
                         new_subtype.label()
                     );
 
-                    // Refresh tools for new subtype
-                    *tools = self
-                        .tool_registry
-                        .get_tool_definitions_for_subtype(tool_config, new_subtype);
+                    // Refresh tools for new subtype, including skill-required tools
+                    let requires_tools = orchestrator.context().active_skill
+                        .as_ref()
+                        .map(|s| s.requires_tools.clone())
+                        .unwrap_or_default();
+                    *tools = if !requires_tools.is_empty() {
+                        self.tool_registry
+                            .get_tool_definitions_for_subtype_with_required(
+                                tool_config,
+                                new_subtype,
+                                &requires_tools,
+                            )
+                    } else {
+                        self.tool_registry
+                            .get_tool_definitions_for_subtype(tool_config, new_subtype)
+                    };
                     if let Some(skill_tool) =
                         self.create_skill_tool_definition_for_subtype(new_subtype)
                     {
@@ -2720,6 +2732,30 @@ impl MessageDispatcher {
             }
         }
 
+        // Some APIs (MiniMax, Kimi) reject conversations with multiple system messages.
+        // Merge all system messages into the first one.
+        if archetype.requires_single_system_message() {
+            let mut merged_content = String::new();
+            let mut non_system: Vec<Message> = Vec::new();
+            for msg in conversation.drain(..) {
+                if msg.role == MessageRole::System {
+                    if !merged_content.is_empty() {
+                        merged_content.push_str("\n\n---\n\n");
+                    }
+                    merged_content.push_str(&msg.content);
+                } else {
+                    non_system.push(msg);
+                }
+            }
+            if !merged_content.is_empty() {
+                conversation.push(Message {
+                    role: MessageRole::System,
+                    content: merged_content,
+                });
+            }
+            conversation.extend(non_system);
+        }
+
         // Clear waiting_for_user_context now that it's been consumed into the prompt
         orchestrator.clear_waiting_for_user_context();
 
@@ -2901,15 +2937,20 @@ impl MessageDispatcher {
 
                     // Update tools for assistant mode (strip define_tasks unless skill requires it)
                     let subtype = orchestrator.current_subtype();
-                    tools = self.tool_registry.get_tool_definitions_for_subtype(tool_config, subtype);
+                    let skill_rt = orchestrator.context().active_skill
+                        .as_ref()
+                        .map(|s| s.requires_tools.clone())
+                        .unwrap_or_default();
+                    tools = if !skill_rt.is_empty() {
+                        self.tool_registry.get_tool_definitions_for_subtype_with_required(tool_config, subtype, &skill_rt)
+                    } else {
+                        self.tool_registry.get_tool_definitions_for_subtype(tool_config, subtype)
+                    };
                     if let Some(skill_tool) = self.create_skill_tool_definition_for_subtype(subtype) {
                         tools.push(skill_tool);
                     }
                     tools.extend(orchestrator.get_mode_tools());
-                    let skill_requires_dt = orchestrator.context().active_skill
-                        .as_ref()
-                        .map(|s| s.requires_tools.iter().any(|t| t == "define_tasks"))
-                        .unwrap_or(false);
+                    let skill_requires_dt = skill_rt.iter().any(|t| t == "define_tasks");
                     if !skill_requires_dt {
                         tools.retain(|t| t.name != "define_tasks");
                     }
@@ -2966,18 +3007,21 @@ impl MessageDispatcher {
 
                 // Update tools for new mode (using current subtype, strip define_tasks unless skill requires it)
                 let subtype = orchestrator.current_subtype();
-                tools = self
-                    .tool_registry
-                    .get_tool_definitions_for_subtype(tool_config, subtype);
+                let skill_rt = orchestrator.context().active_skill
+                    .as_ref()
+                    .map(|s| s.requires_tools.clone())
+                    .unwrap_or_default();
+                tools = if !skill_rt.is_empty() {
+                    self.tool_registry.get_tool_definitions_for_subtype_with_required(tool_config, subtype, &skill_rt)
+                } else {
+                    self.tool_registry.get_tool_definitions_for_subtype(tool_config, subtype)
+                };
                 if let Some(skill_tool) = self.create_skill_tool_definition_for_subtype(subtype) {
                     tools.push(skill_tool);
                 }
                 tools.extend(orchestrator.get_mode_tools());
                 {
-                    let skill_requires_dt = orchestrator.context().active_skill
-                        .as_ref()
-                        .map(|s| s.requires_tools.iter().any(|t| t == "define_tasks"))
-                        .unwrap_or(false);
+                    let skill_requires_dt = skill_rt.iter().any(|t| t == "define_tasks");
                     if !skill_requires_dt {
                         tools.retain(|t| t.name != "define_tasks");
                     }
@@ -3039,7 +3083,7 @@ impl MessageDispatcher {
             );
 
             // Generate with native tool support and progress notifications
-            let ai_response = match self.generate_with_progress(
+            let mut ai_response = match self.generate_with_progress(
                 &client,
                 conversation.clone(),
                 tool_history.clone(),
@@ -3099,6 +3143,9 @@ impl MessageDispatcher {
                     return Err(error_str);
                 }
             };
+
+            // Strip model-specific artifacts (e.g. MiniMax <think> blocks)
+            ai_response.content = archetype.clean_content(&ai_response.content);
 
             log::info!(
                 "[ORCHESTRATED_LOOP] Response - content_len: {}, tool_calls: {}",
@@ -3430,6 +3477,30 @@ impl MessageDispatcher {
             }
         }
 
+        // Some APIs (MiniMax, Kimi) reject conversations with multiple system messages.
+        // Merge all system messages into the first one.
+        if archetype.requires_single_system_message() {
+            let mut merged_content = String::new();
+            let mut non_system: Vec<Message> = Vec::new();
+            for msg in conversation.drain(..) {
+                if msg.role == MessageRole::System {
+                    if !merged_content.is_empty() {
+                        merged_content.push_str("\n\n---\n\n");
+                    }
+                    merged_content.push_str(&msg.content);
+                } else {
+                    non_system.push(msg);
+                }
+            }
+            if !merged_content.is_empty() {
+                conversation.push(Message {
+                    role: MessageRole::System,
+                    content: merged_content,
+                });
+            }
+            conversation.extend(non_system);
+        }
+
         // Clear waiting_for_user_context now that it's been consumed into the prompt
         orchestrator.clear_waiting_for_user_context();
 
@@ -3495,9 +3566,15 @@ impl MessageDispatcher {
 
                 // Update tools (using current subtype, strip define_tasks unless skill requires it)
                 let subtype = orchestrator.current_subtype();
-                tools = self
-                    .tool_registry
-                    .get_tool_definitions_for_subtype(tool_config, subtype);
+                let skill_rt = orchestrator.context().active_skill
+                    .as_ref()
+                    .map(|s| s.requires_tools.clone())
+                    .unwrap_or_default();
+                tools = if !skill_rt.is_empty() {
+                    self.tool_registry.get_tool_definitions_for_subtype_with_required(tool_config, subtype, &skill_rt)
+                } else {
+                    self.tool_registry.get_tool_definitions_for_subtype(tool_config, subtype)
+                };
                 if let Some(skill_tool) = self.create_skill_tool_definition_for_subtype(subtype) {
                     tools.push(skill_tool);
                 }

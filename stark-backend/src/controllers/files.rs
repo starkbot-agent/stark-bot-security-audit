@@ -2,6 +2,7 @@ use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::fs;
+use walkdir::WalkDir;
 
 use crate::config::workspace_dir;
 use crate::AppState;
@@ -61,6 +62,7 @@ struct ListFilesResponse {
 #[derive(Debug, Deserialize)]
 struct ListFilesQuery {
     path: Option<String>,
+    include_dir_sizes: Option<bool>,
 }
 
 /// List files in the workspace directory
@@ -128,6 +130,8 @@ async fn list_files(
         });
     }
 
+    let include_dir_sizes = query.include_dir_sizes.unwrap_or(false);
+
     // Read directory contents
     let mut entries = Vec::new();
     let mut read_dir = match fs::read_dir(&canonical_path).await {
@@ -165,11 +169,21 @@ async fn list_files(
             datetime.format("%Y-%m-%d %H:%M:%S").to_string()
         });
 
+        let size = if metadata.is_dir() {
+            if include_dir_sizes {
+                compute_dir_size(&entry_path)
+            } else {
+                0
+            }
+        } else {
+            metadata.len()
+        };
+
         entries.push(FileEntry {
             name,
             path: rel_path,
             is_dir: metadata.is_dir(),
-            size: if metadata.is_dir() { 0 } else { metadata.len() },
+            size,
             modified,
         });
     }
@@ -368,11 +382,140 @@ async fn workspace_info(
     })
 }
 
+/// Compute total size of a directory by walking all files.
+fn compute_dir_size(path: &std::path::Path) -> u64 {
+    let mut total: u64 = 0;
+    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() {
+            if let Ok(meta) = entry.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteFileRequest {
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteFileResponse {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deleted_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    freed_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Delete a file or directory from the workspace
+async fn delete_file(
+    data: web::Data<AppState>,
+    req: HttpRequest,
+    body: web::Json<DeleteFileRequest>,
+) -> impl Responder {
+    if let Err(resp) = validate_session_from_request(&data, &req) {
+        return resp;
+    }
+
+    let workspace = workspace_dir();
+    let workspace_path = Path::new(&workspace);
+    let full_path = workspace_path.join(&body.path);
+
+    // Security check: canonicalize and ensure within workspace
+    let canonical_workspace = match workspace_path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(DeleteFileResponse {
+                success: false,
+                deleted_count: None,
+                freed_bytes: None,
+                error: Some(format!("Workspace not accessible: {}", e)),
+            });
+        }
+    };
+
+    let canonical_path = match full_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return HttpResponse::NotFound().json(DeleteFileResponse {
+                success: false,
+                deleted_count: None,
+                freed_bytes: None,
+                error: Some("Path not found".to_string()),
+            });
+        }
+    };
+
+    // Must be inside workspace and not the workspace root itself
+    if !canonical_path.starts_with(&canonical_workspace) || canonical_path == canonical_workspace {
+        return HttpResponse::Forbidden().json(DeleteFileResponse {
+            success: false,
+            deleted_count: None,
+            freed_bytes: None,
+            error: Some("Access denied: path outside workspace or is workspace root".to_string()),
+        });
+    }
+
+    // Compute size before deletion
+    let freed_bytes = if canonical_path.is_dir() {
+        compute_dir_size(&canonical_path)
+    } else {
+        std::fs::metadata(&canonical_path).map(|m| m.len()).unwrap_or(0)
+    };
+
+    // Count entries
+    let deleted_count = if canonical_path.is_dir() {
+        WalkDir::new(&canonical_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .count() as u64
+    } else {
+        1
+    };
+
+    // Delete
+    let result = if canonical_path.is_dir() {
+        std::fs::remove_dir_all(&canonical_path)
+    } else {
+        std::fs::remove_file(&canonical_path)
+    };
+
+    match result {
+        Ok(_) => {
+            // Refresh disk quota if available
+            if let Some(dq) = &data.disk_quota {
+                dq.refresh();
+            }
+
+            HttpResponse::Ok().json(DeleteFileResponse {
+                success: true,
+                deleted_count: Some(deleted_count),
+                freed_bytes: Some(freed_bytes),
+                error: None,
+            })
+        }
+        Err(e) => {
+            HttpResponse::InternalServerError().json(DeleteFileResponse {
+                success: false,
+                deleted_count: None,
+                freed_bytes: None,
+                error: Some(format!("Failed to delete: {}", e)),
+            })
+        }
+    }
+}
+
 pub fn config(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api/files")
             .route("", web::get().to(list_files))
             .route("/read", web::get().to(read_file))
+            .route("/delete", web::delete().to(delete_file))
             .route("/workspace", web::get().to(workspace_info)),
     );
 }

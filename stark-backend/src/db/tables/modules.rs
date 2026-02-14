@@ -13,10 +13,8 @@ pub struct InstalledModule {
     pub enabled: bool,
     pub version: String,
     pub description: String,
-    pub has_db_tables: bool,
     pub has_tools: bool,
-    pub has_worker: bool,
-    pub required_api_keys: Vec<String>,
+    pub has_dashboard: bool,
     pub installed_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -26,7 +24,7 @@ impl Database {
     pub fn list_installed_modules(&self) -> SqliteResult<Vec<InstalledModule>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, module_name, enabled, version, description, has_db_tables, has_tools, has_worker, required_api_keys, installed_at, updated_at
+            "SELECT id, module_name, enabled, version, description, has_tools, has_dashboard, installed_at, updated_at
              FROM installed_modules ORDER BY installed_at ASC",
         )?;
 
@@ -68,19 +66,16 @@ impl Database {
         name: &str,
         description: &str,
         version: &str,
-        has_db_tables: bool,
         has_tools: bool,
-        has_worker: bool,
-        required_api_keys: &[&str],
+        has_dashboard: bool,
     ) -> SqliteResult<InstalledModule> {
         let conn = self.conn();
         let now = chrono::Utc::now().to_rfc3339();
-        let api_keys_json = serde_json::to_string(required_api_keys).unwrap_or_else(|_| "[]".to_string());
 
         conn.execute(
-            "INSERT INTO installed_modules (module_name, enabled, version, description, has_db_tables, has_tools, has_worker, required_api_keys, installed_at, updated_at)
-             VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-            rusqlite::params![name, version, description, has_db_tables, has_tools, has_worker, api_keys_json, now],
+            "INSERT INTO installed_modules (module_name, enabled, version, description, has_tools, has_dashboard, installed_at, updated_at)
+             VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            rusqlite::params![name, version, description, has_tools, has_dashboard, now],
         )?;
 
         let id = conn.last_insert_rowid();
@@ -94,10 +89,8 @@ impl Database {
             enabled: true,
             version: version.to_string(),
             description: description.to_string(),
-            has_db_tables,
             has_tools,
-            has_worker,
-            required_api_keys: required_api_keys.iter().map(|s| s.to_string()).collect(),
+            has_dashboard,
             installed_at,
             updated_at: installed_at,
         })
@@ -128,7 +121,7 @@ impl Database {
     pub fn get_installed_module(&self, name: &str) -> SqliteResult<Option<InstalledModule>> {
         let conn = self.conn();
         let result = conn.query_row(
-            "SELECT id, module_name, enabled, version, description, has_db_tables, has_tools, has_worker, required_api_keys, installed_at, updated_at
+            "SELECT id, module_name, enabled, version, description, has_tools, has_dashboard, installed_at, updated_at
              FROM installed_modules WHERE module_name = ?1",
             [name],
             |row| Self::row_to_installed_module(row),
@@ -141,11 +134,8 @@ impl Database {
     }
 
     fn row_to_installed_module(row: &rusqlite::Row) -> rusqlite::Result<InstalledModule> {
-        let api_keys_str: String = row.get(8)?;
-        let required_api_keys: Vec<String> =
-            serde_json::from_str(&api_keys_str).unwrap_or_default();
-        let installed_at_str: String = row.get(9)?;
-        let updated_at_str: String = row.get(10)?;
+        let installed_at_str: String = row.get(7)?;
+        let updated_at_str: String = row.get(8)?;
         let installed_at = DateTime::parse_from_rfc3339(&installed_at_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
@@ -159,10 +149,8 @@ impl Database {
             enabled: row.get(2)?,
             version: row.get(3)?,
             description: row.get(4)?,
-            has_db_tables: row.get(5)?,
-            has_tools: row.get(6)?,
-            has_worker: row.get(7)?,
-            required_api_keys,
+            has_tools: row.get(5)?,
+            has_dashboard: row.get(6)?,
             installed_at,
             updated_at,
         })

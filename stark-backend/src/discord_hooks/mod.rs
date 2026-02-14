@@ -209,7 +209,7 @@ pub async fn process(
 
     // Get or create user profile (only if discord_tipping module is installed)
     if db.is_module_installed("discord_tipping").unwrap_or(false) {
-        if let Err(e) = db::get_or_create_profile(db, &user_id, &user_name) {
+        if let Err(e) = db::get_or_create_profile(db, &user_id, &user_name).await {
             log::error!("Discord hooks: Failed to get/create profile: {}", e);
             // Don't fail the whole request, just log it
         }

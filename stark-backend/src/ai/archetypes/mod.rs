@@ -9,6 +9,7 @@
 pub mod claude;
 pub mod kimi;
 pub mod llama;
+pub mod minimax;
 pub mod openai;
 
 use crate::tools::ToolDefinition;
@@ -27,6 +28,8 @@ pub enum ArchetypeId {
     OpenAI,
     /// Native Claude tool calling
     Claude,
+    /// MiniMax M2.5 - OpenAI-compatible with <think> block stripping
+    MiniMax,
 }
 
 impl ArchetypeId {
@@ -37,6 +40,7 @@ impl ArchetypeId {
             "kimi" | "moonshot" | "native" => Some(ArchetypeId::Kimi),
             "openai" => Some(ArchetypeId::OpenAI),
             "claude" | "anthropic" => Some(ArchetypeId::Claude),
+            "minimax" => Some(ArchetypeId::MiniMax),
             _ => None,
         }
     }
@@ -48,6 +52,7 @@ impl ArchetypeId {
             ArchetypeId::Kimi => "kimi",
             ArchetypeId::OpenAI => "openai",
             ArchetypeId::Claude => "claude",
+            ArchetypeId::MiniMax => "minimax",
         }
     }
 }
@@ -91,6 +96,20 @@ pub trait ModelArchetype: Send + Sync {
     /// Returns None if the response couldn't be parsed as a structured response
     fn parse_response(&self, content: &str) -> Option<AgentResponse>;
 
+    /// Clean model-specific artifacts from response content (e.g. <think> blocks).
+    /// Called on native tool-calling responses before the content is used.
+    /// Default implementation returns content unchanged.
+    fn clean_content(&self, content: &str) -> String {
+        content.to_string()
+    }
+
+    /// Whether this model requires all system messages to be merged into one.
+    /// Some APIs (e.g. MiniMax/Kimi) reject conversations with multiple system messages.
+    /// Default: false.
+    fn requires_single_system_message(&self) -> bool {
+        false
+    }
+
     /// Format the follow-up message after a tool execution
     fn format_tool_followup(&self, tool_name: &str, tool_result: &str, success: bool) -> String;
 }
@@ -112,6 +131,7 @@ impl ArchetypeRegistry {
         registry.register(Box::new(kimi::KimiArchetype::new()));
         registry.register(Box::new(openai::OpenAIArchetype::new()));
         registry.register(Box::new(claude::ClaudeArchetype::new()));
+        registry.register(Box::new(minimax::MiniMaxArchetype::new()));
 
         registry
     }

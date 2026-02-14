@@ -13,7 +13,6 @@ import {
   Brain,
   Users,
   FolderOpen,
-  ScrollText,
   Bug,
   LogOut,
   Key,
@@ -108,7 +107,6 @@ export default function Sidebar() {
           <NavItem to="/channels" icon={Monitor} label="Channels" />
           <NavItem to="/heartbeat" icon={Heart} label="Heartbeat" />
           <NavItem to="/scheduling" icon={Clock} label="Scheduling" />
-          <NavItem to="/modules" icon={Package} label="Modules" />
           <NavItem to="/api-keys" icon={Key} label="API Keys" />
           <NavItem to="/cloud-backup" icon={Cloud} label="Cloud Backup" />
         </div>
@@ -133,7 +131,7 @@ export default function Sidebar() {
           <p className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">
             Developer
           </p>
-          <NavItem to="/logs" icon={ScrollText} label="Live Logs" />
+          <NavItem to="/modules" icon={Package} label="Modules" />
           <NavItem to="/system" icon={HardDrive} label="System" />
           <NavItem to="/debug" icon={Bug} label="Debug" />
           <NavItem to="/payments" icon={DollarSign} label="Payments" />

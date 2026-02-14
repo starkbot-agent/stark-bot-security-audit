@@ -23,5 +23,4 @@ pub mod telegram_chat_log; // telegram_chat_messages (passive chat log for readH
 pub mod x402_payment_limits; // x402_payment_limits (per-call max amounts per token)
 pub mod kanban;          // kanban_items (kanban board task management)
 pub mod modules;         // installed_modules (plugin system registry)
-pub mod wallet_monitor;  // wallet_watchlist, wallet_activity (wallet monitoring plugin)
 pub mod telemetry;       // execution_spans, rollouts, attempts, resource_versions

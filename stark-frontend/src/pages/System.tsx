@@ -1,10 +1,11 @@
-import { useState } from 'react';
-import { HardDrive, Trash2, FileText, FolderOpen } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { HardDrive, Trash2, FileText, FolderOpen, File, Folder, ChevronRight, ArrowLeft } from 'lucide-react';
 import Card, { CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 import { useApi } from '@/hooks/useApi';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, listFilesWithSizes, deleteWorkspaceFile } from '@/lib/api';
+import type { FileEntry } from '@/lib/api';
 
 interface SystemInfo {
   disk: {
@@ -54,8 +55,35 @@ export default function System() {
   const [memoryDays, setMemoryDays] = useState(30);
   const [showMemoryModal, setShowMemoryModal] = useState(false);
   const [showWorkspaceModal, setShowWorkspaceModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<FileEntry | null>(null);
   const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
   const [cleaning, setCleaning] = useState(false);
+
+  // Workspace file browser state
+  const [wsEntries, setWsEntries] = useState<FileEntry[]>([]);
+  const [wsPath, setWsPath] = useState('');
+  const [wsLoading, setWsLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const fetchWorkspaceEntries = useCallback(async (path?: string) => {
+    setWsLoading(true);
+    try {
+      const result = await listFilesWithSizes(path);
+      if (result.success) {
+        setWsEntries(result.entries);
+        setWsPath(result.path);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setWsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchWorkspaceEntries();
+  }, [fetchWorkspaceEntries]);
 
   const handleCleanupMemories = async () => {
     setCleaning(true);
@@ -85,12 +113,45 @@ export default function System() {
       });
       setCleanupResult(result);
       refetch();
+      fetchWorkspaceEntries();
     } catch (e) {
       setCleanupResult({ success: false, deleted_count: 0, freed_bytes: 0, error: String(e) });
     } finally {
       setCleaning(false);
       setShowWorkspaceModal(false);
     }
+  };
+
+  const handleDeleteEntry = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const result = await deleteWorkspaceFile(deleteTarget.path);
+      if (result.success) {
+        setCleanupResult(result);
+        refetch();
+        fetchWorkspaceEntries(wsPath || undefined);
+      } else {
+        setCleanupResult({ success: false, deleted_count: 0, freed_bytes: 0, error: result.error });
+      }
+    } catch (e) {
+      setCleanupResult({ success: false, deleted_count: 0, freed_bytes: 0, error: String(e) });
+    } finally {
+      setDeleting(false);
+      setShowDeleteModal(false);
+      setDeleteTarget(null);
+    }
+  };
+
+  const navigateToDir = (path: string) => {
+    fetchWorkspaceEntries(path);
+  };
+
+  const navigateUp = () => {
+    if (!wsPath) return;
+    const parts = wsPath.split('/').filter(Boolean);
+    parts.pop();
+    fetchWorkspaceEntries(parts.length > 0 ? parts.join('/') : undefined);
   };
 
   const disk = info?.disk;
@@ -171,6 +232,115 @@ export default function System() {
             </CardContent>
           </Card>
 
+          {/* Workspace Files Browser */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <FolderOpen className="w-5 h-5 text-blue-400" />
+                Workspace Files
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {/* Breadcrumb / navigation */}
+              <div className="flex items-center gap-2 mb-4">
+                {wsPath && (
+                  <button
+                    onClick={navigateUp}
+                    className="flex items-center gap-1 text-sm text-slate-400 hover:text-white transition-colors"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                    Back
+                  </button>
+                )}
+                <div className="flex items-center gap-1 text-sm text-slate-500">
+                  <button
+                    onClick={() => fetchWorkspaceEntries()}
+                    className="hover:text-white transition-colors"
+                  >
+                    workspace
+                  </button>
+                  {wsPath && wsPath.split('/').filter(Boolean).map((part, i, arr) => {
+                    const partPath = arr.slice(0, i + 1).join('/');
+                    return (
+                      <span key={partPath} className="flex items-center gap-1">
+                        <ChevronRight className="w-3 h-3" />
+                        <button
+                          onClick={() => navigateToDir(partPath)}
+                          className="hover:text-white transition-colors"
+                        >
+                          {part}
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {wsLoading ? (
+                <div className="text-slate-400 text-sm py-4">Loading...</div>
+              ) : wsEntries.length === 0 ? (
+                <div className="text-slate-500 text-sm py-4">No files in workspace</div>
+              ) : (
+                <div className="space-y-1 max-h-80 overflow-y-auto">
+                  {wsEntries.map((entry) => (
+                    <div
+                      key={entry.path}
+                      className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-700/50 group"
+                    >
+                      {entry.is_dir ? (
+                        <Folder className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                      ) : (
+                        <File className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                      )}
+                      {entry.is_dir ? (
+                        <button
+                          onClick={() => navigateToDir(entry.path)}
+                          className="text-sm text-slate-200 hover:text-white truncate text-left flex-1"
+                        >
+                          {entry.name}
+                        </button>
+                      ) : (
+                        <span className="text-sm text-slate-300 truncate flex-1">
+                          {entry.name}
+                        </span>
+                      )}
+                      <span className="text-xs text-slate-500 font-mono flex-shrink-0 w-20 text-right">
+                        {formatBytes(entry.size)}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setDeleteTarget(entry);
+                          setShowDeleteModal(true);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 transition-all flex-shrink-0"
+                        title={`Delete ${entry.name}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Clear All button */}
+              <div className="mt-4 pt-4 border-t border-slate-700">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 text-sm">
+                    Total: {formatBytes(disk!.breakdown.workspace || 0)}
+                  </span>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => setShowWorkspaceModal(true)}
+                  >
+                    <Trash2 className="w-3 h-3 mr-1" />
+                    Clear All
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Cleanup actions */}
           <div className="grid gap-6 lg:grid-cols-2">
             {/* Clear Old Memories */}
@@ -206,37 +376,6 @@ export default function System() {
                 >
                   <Trash2 className="w-4 h-4 mr-2" />
                   Clean Up
-                </Button>
-              </CardContent>
-            </Card>
-
-            {/* Clear Workspace */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <FolderOpen className="w-5 h-5 text-blue-400" />
-                  Clear Workspace Files
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-slate-400 text-sm mb-4">
-                  Delete all files from the workspace directory. This frees up the most space but removes all saved files.
-                </p>
-                <div className="mb-4">
-                  <div className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
-                    <span className="text-slate-300 text-sm">Current size</span>
-                    <span className="text-white text-sm font-mono">
-                      {formatBytes(disk!.breakdown.workspace)}
-                    </span>
-                  </div>
-                </div>
-                <Button
-                  variant="danger"
-                  onClick={() => setShowWorkspaceModal(true)}
-                  className="w-full"
-                >
-                  <Trash2 className="w-4 h-4 mr-2" />
-                  Clear All
                 </Button>
               </CardContent>
             </Card>
@@ -332,6 +471,41 @@ export default function System() {
             className="flex-1"
           >
             {cleaning ? 'Deleting...' : 'Delete All'}
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Confirm: single file/dir deletion */}
+      <Modal
+        isOpen={showDeleteModal}
+        onClose={() => { setShowDeleteModal(false); setDeleteTarget(null); }}
+        title="Confirm Delete"
+        size="sm"
+      >
+        {deleteTarget && (
+          <p className="text-slate-300 mb-6">
+            Delete <strong className="text-white">{deleteTarget.name}</strong>
+            {deleteTarget.is_dir ? ' and all its contents' : ''}?
+            {deleteTarget.size > 0 && (
+              <span className="text-slate-400"> ({formatBytes(deleteTarget.size)})</span>
+            )}
+          </p>
+        )}
+        <div className="flex gap-3">
+          <Button
+            variant="ghost"
+            onClick={() => { setShowDeleteModal(false); setDeleteTarget(null); }}
+            className="flex-1"
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            onClick={handleDeleteEntry}
+            disabled={deleting}
+            className="flex-1"
+          >
+            {deleting ? 'Deleting...' : 'Delete'}
           </Button>
         </div>
       </Modal>

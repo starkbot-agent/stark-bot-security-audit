@@ -5,7 +5,7 @@ use crate::discord_hooks::db;
 
 /// Execute the status command
 pub async fn execute(user_id: &str, database: &Database) -> Result<String, String> {
-    let profile = match db::get_profile(database, user_id)? {
+    let profile = match db::get_profile(database, user_id).await? {
         Some(p) => p,
         None => {
             return Ok(

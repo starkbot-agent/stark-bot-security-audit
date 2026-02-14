@@ -145,13 +145,13 @@ async fn handle_shortcircuit_command(
             }
 
             // Ensure profile exists
-            if let Err(e) = user_db::get_or_create_profile(db, &tg_user_id, user_name) {
+            if let Err(e) = user_db::get_or_create_profile(db, &tg_user_id, user_name).await {
                 log::error!("Telegram: Failed to create profile for {}: {}", user_id, e);
                 return Some("Sorry, failed to create your profile.".to_string());
             }
 
             // Check if address already registered
-            if let Ok(Some(existing)) = user_db::get_profile_by_address(db, addr) {
+            if let Ok(Some(existing)) = user_db::get_profile_by_address(db, addr).await {
                 if existing.discord_user_id == tg_user_id {
                     return Some(format!(
                         "You already have this address registered: {}",
@@ -165,7 +165,7 @@ async fn handle_shortcircuit_command(
             }
 
             // Register
-            match user_db::register_address(db, &tg_user_id, addr) {
+            match user_db::register_address(db, &tg_user_id, addr).await {
                 Ok(()) => Some(format!(
                     "Successfully registered your address: {}\nYou can now receive tips. 🚀",
                     addr
@@ -177,7 +177,7 @@ async fn handle_shortcircuit_command(
             }
         }
         "status" | "whoami" | "me" => {
-            match user_db::get_profile(db, &tg_user_id) {
+            match user_db::get_profile(db, &tg_user_id).await {
                 Ok(Some(profile)) => {
                     if let Some(addr) = profile.public_address {
                         let registered_at =
@@ -213,12 +213,12 @@ async fn handle_shortcircuit_command(
                 .to_string(),
         ),
         "unregister" | "deregister" | "remove" => {
-            if let Err(e) = user_db::get_or_create_profile(db, &tg_user_id, user_name) {
+            if let Err(e) = user_db::get_or_create_profile(db, &tg_user_id, user_name).await {
                 log::error!("Telegram: Failed to get profile for {}: {}", user_id, e);
                 return Some("Sorry, failed to process your request.".to_string());
             }
 
-            match user_db::unregister_address(db, &tg_user_id) {
+            match user_db::unregister_address(db, &tg_user_id).await {
                 Ok(()) => Some("Your address has been unregistered.".to_string()),
                 Err(e) => {
                     log::error!("Telegram: Failed to unregister: {}", e);

@@ -1,17 +1,25 @@
 use crate::gateway::protocol::GatewayEvent;
 use dashmap::DashMap;
+use std::collections::VecDeque;
+use std::sync::Mutex;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+/// Max number of recent events to keep in the ring buffer for replay on connect
+const EVENT_BUFFER_SIZE: usize = 200;
 
 /// Broadcasts events to all connected WebSocket clients
 pub struct EventBroadcaster {
     clients: DashMap<String, mpsc::Sender<GatewayEvent>>,
+    /// Ring buffer of recent events so new clients can see what happened before they connected
+    recent_events: Mutex<VecDeque<GatewayEvent>>,
 }
 
 impl EventBroadcaster {
     pub fn new() -> Self {
         Self {
             clients: DashMap::new(),
+            recent_events: Mutex::new(VecDeque::with_capacity(EVENT_BUFFER_SIZE)),
         }
     }
 
@@ -24,6 +32,12 @@ impl EventBroadcaster {
         (client_id, rx)
     }
 
+    /// Get a snapshot of recent events for replaying to newly connected clients
+    pub fn get_recent_events(&self) -> Vec<GatewayEvent> {
+        let buffer = self.recent_events.lock().unwrap();
+        buffer.iter().cloned().collect()
+    }
+
     /// Unsubscribe a client
     pub fn unsubscribe(&self, client_id: &str) {
         self.clients.remove(client_id);
@@ -32,6 +46,14 @@ impl EventBroadcaster {
 
     /// Broadcast an event to all connected clients
     pub fn broadcast(&self, event: GatewayEvent) {
+        // Store in ring buffer for replay to future clients
+        if let Ok(mut buffer) = self.recent_events.lock() {
+            if buffer.len() >= EVENT_BUFFER_SIZE {
+                buffer.pop_front();
+            }
+            buffer.push_back(event.clone());
+        }
+
         let event_name = event.event.clone();
         let mut failed_clients = Vec::new();
 

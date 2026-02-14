@@ -33,7 +33,7 @@ pub mod defaults {
     pub const JOURNAL_DIR: &str = "journal";
     pub const SOUL_DIR: &str = "soul";
     pub const MEMORY_DIR: &str = "memory";
-    pub const DISK_QUOTA_MB: u64 = 256;
+    pub const DISK_QUOTA_MB: u64 = 1024;
 }
 
 /// Returns the absolute path to the stark-backend directory.

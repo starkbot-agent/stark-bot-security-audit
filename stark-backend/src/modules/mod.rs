@@ -1,23 +1,26 @@
 //! Module/plugin system for StarkBot
 //!
-//! Modules are optional features that can be installed on demand.
-//! Each module can provide database tables, tools, and background workers.
+//! Modules are standalone microservices that run as separate binaries.
+//! Each module has its own database, HTTP server, and dashboard.
+//! The main bot communicates with modules via JSON RPC over HTTP.
 
 pub mod discord_tipping;
 pub mod registry;
 pub mod wallet_monitor;
 
-use crate::channels::MessageDispatcher;
 use crate::db::Database;
-use crate::gateway::events::EventBroadcaster;
 use crate::tools::registry::Tool;
-use rusqlite::Connection;
 use serde_json::Value;
 use std::sync::Arc;
 
 pub use registry::ModuleRegistry;
 
-/// Trait that all modules must implement
+/// Trait that all modules must implement.
+///
+/// Modules are standalone services — they manage their own database, workers,
+/// and dashboard. This trait defines the interface the main bot uses to
+/// interact with them: registering tools, fetching dashboard data, and
+/// performing backup/restore via RPC.
 pub trait Module: Send + Sync {
     /// Unique module name (used as identifier)
     fn name(&self) -> &'static str;
@@ -25,50 +28,36 @@ pub trait Module: Send + Sync {
     fn description(&self) -> &'static str;
     /// Semantic version
     fn version(&self) -> &'static str;
-    /// API keys this module requires to function
-    fn required_api_keys(&self) -> Vec<&'static str>;
-    /// Whether this module creates database tables
-    fn has_db_tables(&self) -> bool;
-    /// Whether this module provides tools
+    /// Default port the service listens on
+    fn default_port(&self) -> u16;
+
+    /// The base URL of the running service (reads from env or falls back to default)
+    fn service_url(&self) -> String;
+
+    /// Whether this module provides tools to the bot
     fn has_tools(&self) -> bool;
-    /// Whether this module runs a background worker
-    fn has_worker(&self) -> bool;
+    /// Whether this module has a standalone dashboard (served by the service itself)
+    fn has_dashboard(&self) -> bool;
 
-    /// Create DB tables (idempotent, uses CREATE IF NOT EXISTS)
-    fn init_tables(&self, conn: &Connection) -> rusqlite::Result<()>;
-
-    /// Return tool instances to register
+    /// Return tool instances to register with the bot
     fn create_tools(&self) -> Vec<Arc<dyn Tool>>;
-
-    /// Spawn background worker (if has_worker). Returns a JoinHandle.
-    fn spawn_worker(
-        &self,
-        db: Arc<Database>,
-        broadcaster: Arc<EventBroadcaster>,
-        dispatcher: Arc<MessageDispatcher>,
-    ) -> Option<tokio::task::JoinHandle<()>>;
 
     /// Optional: skill markdown content to install
     fn skill_content(&self) -> Option<&'static str> {
         None
     }
 
-    /// Whether this module has a dashboard UI
-    fn has_dashboard(&self) -> bool {
-        false
-    }
-
-    /// Return dashboard data as JSON (module-specific)
+    /// Return dashboard data as JSON (fetched from the service via RPC)
     fn dashboard_data(&self, _db: &Database) -> Option<Value> {
         None
     }
 
-    /// Return data to include in cloud backup (module-specific)
+    /// Return data to include in cloud backup (fetched from service)
     fn backup_data(&self, _db: &Database) -> Option<Value> {
         None
     }
 
-    /// Restore module data from a cloud backup
+    /// Restore module data from a cloud backup (sent to service)
     fn restore_data(&self, _db: &Database, _data: &Value) -> Result<(), String> {
         Ok(())
     }

@@ -1833,3 +1833,17 @@ export async function cleanupWorkspace(): Promise<CleanupResult> {
     body: JSON.stringify({ confirm: true }),
   });
 }
+
+export async function deleteWorkspaceFile(path: string): Promise<CleanupResult> {
+  return apiFetch('/files/delete', {
+    method: 'DELETE',
+    body: JSON.stringify({ path }),
+  });
+}
+
+export async function listFilesWithSizes(path?: string): Promise<ListFilesResponse> {
+  const params = new URLSearchParams();
+  if (path) params.set('path', path);
+  params.set('include_dir_sizes', 'true');
+  return apiFetch(`/files?${params.toString()}`);
+}

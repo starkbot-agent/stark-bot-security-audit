@@ -1,7 +1,9 @@
 //! Wallet monitoring tools — watchlist management, activity queries, and monitor control
 //!
 //! These tools are only registered when the wallet_monitor module is installed.
+//! All operations go through the wallet-monitor-service via RPC.
 
+use crate::integrations::wallet_monitor_client::WalletMonitorClient;
 use crate::tools::registry::Tool;
 use crate::tools::types::{
     PropertySchema, ToolContext, ToolDefinition, ToolGroup, ToolInputSchema, ToolResult,
@@ -11,6 +13,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
+use wallet_monitor_types::ActivityEntry;
 
 // =====================================================
 // WalletWatchlistTool
@@ -18,10 +22,11 @@ use std::collections::HashMap;
 
 pub struct WalletWatchlistTool {
     definition: ToolDefinition,
+    client: Arc<WalletMonitorClient>,
 }
 
 impl WalletWatchlistTool {
-    pub fn new() -> Self {
+    pub fn new(client: Arc<WalletMonitorClient>) -> Self {
         let mut properties = HashMap::new();
 
         properties.insert(
@@ -129,6 +134,7 @@ impl WalletWatchlistTool {
                 group: ToolGroup::Finance,
                 hidden: false,
             },
+            client,
         }
     }
 }
@@ -155,15 +161,10 @@ impl Tool for WalletWatchlistTool {
         self.definition.clone()
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> ToolResult {
+    async fn execute(&self, params: Value, _context: &ToolContext) -> ToolResult {
         let params: WatchlistParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid parameters: {}", e)),
-        };
-
-        let db = match context.database.as_ref() {
-            Some(db) => db,
-            None => return ToolResult::error("Database not available"),
         };
 
         match params.action.as_str() {
@@ -178,7 +179,7 @@ impl Tool for WalletWatchlistTool {
                 let chain = params.chain.as_deref().unwrap_or("mainnet");
                 let threshold = params.threshold_usd.unwrap_or(10000.0);
 
-                match db.add_to_watchlist(address, params.label.as_deref(), chain, threshold) {
+                match self.client.add_wallet(address, params.label.as_deref(), chain, threshold).await {
                     Ok(entry) => ToolResult::success(json!({
                         "status": "added",
                         "id": entry.id,
@@ -187,13 +188,7 @@ impl Tool for WalletWatchlistTool {
                         "chain": entry.chain,
                         "threshold_usd": entry.large_trade_threshold_usd,
                     }).to_string()),
-                    Err(e) => {
-                        if e.to_string().contains("UNIQUE constraint") {
-                            ToolResult::error(format!("Wallet {} is already on the watchlist for chain {}", address, chain))
-                        } else {
-                            ToolResult::error(format!("Failed to add wallet: {}", e))
-                        }
-                    }
+                    Err(e) => ToolResult::error(format!("Failed to add wallet: {}", e)),
                 }
             }
 
@@ -202,14 +197,13 @@ impl Tool for WalletWatchlistTool {
                     Some(id) => id,
                     None => return ToolResult::error("'id' is required for 'remove' action"),
                 };
-                match db.remove_from_watchlist(id) {
-                    Ok(true) => ToolResult::success(format!("Removed watchlist entry #{}", id)),
-                    Ok(false) => ToolResult::error(format!("Watchlist entry #{} not found", id)),
-                    Err(e) => ToolResult::error(format!("Failed to remove: {}", e)),
+                match self.client.remove_wallet(id).await {
+                    Ok(_) => ToolResult::success(format!("Removed watchlist entry #{}", id)),
+                    Err(e) => ToolResult::error(e),
                 }
             }
 
-            "list" => match db.list_watchlist() {
+            "list" => match self.client.list_watchlist().await {
                 Ok(entries) => {
                     if entries.is_empty() {
                         return ToolResult::success("No wallets on the watchlist. Use action='add' to start monitoring.");
@@ -234,16 +228,15 @@ impl Tool for WalletWatchlistTool {
                     Some(id) => id,
                     None => return ToolResult::error("'id' is required for 'update' action"),
                 };
-                match db.update_watchlist_entry(
+                match self.client.update_wallet(
                     id,
                     params.label.as_deref(),
                     params.threshold_usd,
                     params.monitor_enabled,
                     params.notes.as_deref(),
-                ) {
-                    Ok(true) => ToolResult::success(format!("Updated watchlist entry #{}", id)),
-                    Ok(false) => ToolResult::error(format!("Watchlist entry #{} not found", id)),
-                    Err(e) => ToolResult::error(format!("Failed to update: {}", e)),
+                ).await {
+                    Ok(_) => ToolResult::success(format!("Updated watchlist entry #{}", id)),
+                    Err(e) => ToolResult::error(e),
                 }
             }
 
@@ -262,10 +255,11 @@ impl Tool for WalletWatchlistTool {
 
 pub struct WalletActivityTool {
     definition: ToolDefinition,
+    client: Arc<WalletMonitorClient>,
 }
 
 impl WalletActivityTool {
-    pub fn new() -> Self {
+    pub fn new(client: Arc<WalletMonitorClient>) -> Self {
         let mut properties = HashMap::new();
 
         properties.insert(
@@ -351,6 +345,7 @@ impl WalletActivityTool {
                 group: ToolGroup::Finance,
                 hidden: false,
             },
+            client,
         }
     }
 }
@@ -371,20 +366,15 @@ impl Tool for WalletActivityTool {
         self.definition.clone()
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> ToolResult {
+    async fn execute(&self, params: Value, _context: &ToolContext) -> ToolResult {
         let params: ActivityParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid parameters: {}", e)),
         };
 
-        let db = match context.database.as_ref() {
-            Some(db) => db,
-            None => return ToolResult::error("Database not available"),
-        };
-
         match params.action.as_str() {
             "recent" => {
-                let filter = crate::db::tables::wallet_monitor::ActivityFilter {
+                let filter = wallet_monitor_types::ActivityFilter {
                     address: params.address,
                     activity_type: params.activity_type,
                     chain: params.chain,
@@ -392,22 +382,26 @@ impl Tool for WalletActivityTool {
                     limit: Some(params.limit.unwrap_or(25)),
                     ..Default::default()
                 };
-                match db.query_activity(&filter) {
+                match self.client.query_activity(&filter).await {
                     Ok(entries) => format_activity_list(&entries, "Recent Activity"),
                     Err(e) => ToolResult::error(format!("Query failed: {}", e)),
                 }
             }
 
             "large_trades" => {
-                let limit = params.limit.unwrap_or(25);
-                match db.get_recent_large_trades(limit) {
+                let filter = wallet_monitor_types::ActivityFilter {
+                    large_only: true,
+                    limit: Some(params.limit.unwrap_or(25)),
+                    ..Default::default()
+                };
+                match self.client.query_activity(&filter).await {
                     Ok(entries) => format_activity_list(&entries, "Large Trades"),
                     Err(e) => ToolResult::error(format!("Query failed: {}", e)),
                 }
             }
 
             "search" => {
-                let filter = crate::db::tables::wallet_monitor::ActivityFilter {
+                let filter = wallet_monitor_types::ActivityFilter {
                     address: params.address,
                     activity_type: params.activity_type,
                     chain: params.chain,
@@ -415,13 +409,13 @@ impl Tool for WalletActivityTool {
                     limit: Some(params.limit.unwrap_or(50)),
                     ..Default::default()
                 };
-                match db.query_activity(&filter) {
+                match self.client.query_activity(&filter).await {
                     Ok(entries) => format_activity_list(&entries, "Search Results"),
                     Err(e) => ToolResult::error(format!("Query failed: {}", e)),
                 }
             }
 
-            "stats" => match db.get_activity_stats() {
+            "stats" => match self.client.get_activity_stats().await {
                 Ok(stats) => ToolResult::success(json!({
                     "total_transactions": stats.total_transactions,
                     "large_trades": stats.large_trades,
@@ -443,10 +437,7 @@ impl Tool for WalletActivityTool {
     }
 }
 
-fn format_activity_list(
-    entries: &[crate::db::tables::wallet_monitor::ActivityEntry],
-    title: &str,
-) -> ToolResult {
+fn format_activity_list(entries: &[ActivityEntry], title: &str) -> ToolResult {
     if entries.is_empty() {
         return ToolResult::success(format!("**{}**: No activity found.", title));
     }
@@ -497,10 +488,11 @@ fn format_activity_list(
 
 pub struct WalletMonitorControlTool {
     definition: ToolDefinition,
+    client: Arc<WalletMonitorClient>,
 }
 
 impl WalletMonitorControlTool {
-    pub fn new() -> Self {
+    pub fn new(client: Arc<WalletMonitorClient>) -> Self {
         let mut properties = HashMap::new();
 
         properties.insert(
@@ -526,6 +518,7 @@ impl WalletMonitorControlTool {
                 group: ToolGroup::Finance,
                 hidden: false,
             },
+            client,
         }
     }
 }
@@ -541,64 +534,40 @@ impl Tool for WalletMonitorControlTool {
         self.definition.clone()
     }
 
-    async fn execute(&self, params: Value, context: &ToolContext) -> ToolResult {
+    async fn execute(&self, params: Value, _context: &ToolContext) -> ToolResult {
         let params: ControlParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => return ToolResult::error(format!("Invalid parameters: {}", e)),
         };
 
-        let db = match context.database.as_ref() {
-            Some(db) => db,
-            None => return ToolResult::error("Database not available"),
-        };
-
         match params.action.as_str() {
             "status" => {
-                let installed = db.is_module_installed("wallet_monitor").unwrap_or(false);
-                let enabled = db.is_module_enabled("wallet_monitor").unwrap_or(false);
-                let has_api_key = db
-                    .get_api_key("ALCHEMY_API_KEY")
-                    .ok()
-                    .flatten()
-                    .is_some();
-                let watchlist_count = db
-                    .list_watchlist()
-                    .map(|w| w.len())
-                    .unwrap_or(0);
-                let active_count = db
-                    .list_active_watchlist()
-                    .map(|w| w.len())
-                    .unwrap_or(0);
-                let stats = db.get_activity_stats().ok();
-
-                ToolResult::success(json!({
-                    "installed": installed,
-                    "enabled": enabled,
-                    "alchemy_api_key": has_api_key,
-                    "watchlist_total": watchlist_count,
-                    "watchlist_active": active_count,
-                    "total_transactions": stats.as_ref().map(|s| s.total_transactions).unwrap_or(0),
-                    "large_trades": stats.as_ref().map(|s| s.large_trades).unwrap_or(0),
-                    "worker_status": if enabled && has_api_key { "running" } else if enabled { "waiting_for_api_key" } else { "stopped" },
-                }).to_string())
+                match self.client.get_status().await {
+                    Ok(status) => ToolResult::success(json!({
+                        "running": status.running,
+                        "uptime_secs": status.uptime_secs,
+                        "watched_wallets": status.watched_wallets,
+                        "active_wallets": status.active_wallets,
+                        "total_transactions": status.total_transactions,
+                        "large_trades": status.large_trades,
+                        "last_tick_at": status.last_tick_at,
+                        "poll_interval_secs": status.poll_interval_secs,
+                    }).to_string()),
+                    Err(e) => ToolResult::error(format!("Wallet monitor service unavailable: {}", e)),
+                }
             }
 
             "trigger" => {
-                // We can't directly trigger the worker loop, but we can verify it's running
-                // and provide the user with status info
-                let enabled = db.is_module_enabled("wallet_monitor").unwrap_or(false);
-                if !enabled {
-                    return ToolResult::error("Wallet monitor is not enabled. Install or enable it first.");
+                match self.client.get_status().await {
+                    Ok(status) if status.running => {
+                        ToolResult::success(format!(
+                            "Wallet monitor service is running (uptime: {}s, poll interval: {}s). The next tick will process any pending wallets.",
+                            status.uptime_secs, status.poll_interval_secs
+                        ))
+                    }
+                    Ok(_) => ToolResult::error("Wallet monitor service is not running."),
+                    Err(e) => ToolResult::error(format!("Wallet monitor service unavailable: {}", e)),
                 }
-                let has_api_key = db
-                    .get_api_key("ALCHEMY_API_KEY")
-                    .ok()
-                    .flatten()
-                    .is_some();
-                if !has_api_key {
-                    return ToolResult::error("ALCHEMY_API_KEY is not configured. Install it first.");
-                }
-                ToolResult::success("Wallet monitor worker is running. It polls every 60 seconds. The next tick will process any pending wallets.")
             }
 
             _ => ToolResult::error(format!(

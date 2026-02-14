@@ -1,18 +1,27 @@
 //! Discord Tipping module — enables tipping Discord users with ERC-20 tokens
 //!
-//! Manages discord_user_profiles table, provides the discord_resolve_user tool,
-//! and exposes a dashboard showing all registered profiles.
+//! Delegates to the standalone discord-tipping-service via RPC.
+//! The service must be running separately on DISCORD_TIPPING_URL (default: http://127.0.0.1:9101).
 
-use crate::channels::MessageDispatcher;
 use crate::db::Database;
-use crate::discord_hooks;
-use crate::gateway::events::EventBroadcaster;
+use crate::integrations::discord_tipping_client::DiscordTippingClient;
 use crate::tools::registry::Tool;
-use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub struct DiscordTippingModule;
+
+impl DiscordTippingModule {
+    fn make_client() -> DiscordTippingClient {
+        let url = Self::url_from_env();
+        DiscordTippingClient::new(&url)
+    }
+
+    fn url_from_env() -> String {
+        std::env::var("DISCORD_TIPPING_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:9101".to_string())
+    }
+}
 
 impl super::Module for DiscordTippingModule {
     fn name(&self) -> &'static str {
@@ -24,107 +33,101 @@ impl super::Module for DiscordTippingModule {
     }
 
     fn version(&self) -> &'static str {
-        "1.0.0"
+        "1.1.0"
     }
 
-    fn required_api_keys(&self) -> Vec<&'static str> {
-        vec![] // No API keys required — uses the bot's existing wallet
+    fn default_port(&self) -> u16 {
+        9101
     }
 
-    fn has_db_tables(&self) -> bool {
-        true
+    fn service_url(&self) -> String {
+        Self::url_from_env()
     }
 
     fn has_tools(&self) -> bool {
         true
     }
 
-    fn has_worker(&self) -> bool {
-        false
-    }
-
-    fn init_tables(&self, conn: &Connection) -> rusqlite::Result<()> {
-        discord_hooks::db::init_tables(conn)
+    fn has_dashboard(&self) -> bool {
+        true
     }
 
     fn create_tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::new(
-            discord_hooks::tools::DiscordResolveUserTool::new(),
+            crate::discord_hooks::tools::DiscordResolveUserTool::new(),
         )]
-    }
-
-    fn spawn_worker(
-        &self,
-        _db: Arc<Database>,
-        _broadcaster: Arc<EventBroadcaster>,
-        _dispatcher: Arc<MessageDispatcher>,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        None
     }
 
     fn skill_content(&self) -> Option<&'static str> {
         Some(include_str!("../../../skills/discord_tipping.md"))
     }
 
-    fn has_dashboard(&self) -> bool {
-        true
-    }
+    fn dashboard_data(&self, _db: &Database) -> Option<Value> {
+        let client = Self::make_client();
+        let rt = tokio::runtime::Handle::try_current().ok()?;
 
-    fn dashboard_data(&self, db: &Database) -> Option<Value> {
-        let all_profiles = discord_hooks::db::list_all_profiles(db).ok()?;
-        let registered_profiles: Vec<_> = all_profiles
-            .iter()
-            .filter(|p| p.registration_status == "registered")
-            .collect();
-        let total_count = all_profiles.len();
-        let registered_count = registered_profiles.len();
+        let result = std::thread::scope(|_| {
+            rt.block_on(async {
+                let all_profiles = client.list_all_profiles().await.ok()?;
+                let registered_count = all_profiles
+                    .iter()
+                    .filter(|p| p.registration_status == "registered")
+                    .count();
+                let total_count = all_profiles.len();
 
-        let profiles_json: Vec<Value> = all_profiles
-            .iter()
-            .map(|p| {
-                json!({
-                    "discord_user_id": p.discord_user_id,
-                    "discord_username": p.discord_username,
-                    "public_address": p.public_address,
-                    "registration_status": p.registration_status,
-                    "registered_at": p.registered_at,
-                    "last_interaction_at": p.last_interaction_at,
-                })
-            })
-            .collect();
-
-        Some(json!({
-            "total_profiles": total_count,
-            "registered_count": registered_count,
-            "unregistered_count": total_count - registered_count,
-            "profiles": profiles_json,
-        }))
-    }
-
-    fn backup_data(&self, db: &Database) -> Option<Value> {
-        let profiles = discord_hooks::db::list_registered_profiles(db).ok()?;
-        if profiles.is_empty() {
-            return None;
-        }
-
-        let entries: Vec<Value> = profiles
-            .iter()
-            .filter_map(|p| {
-                p.public_address.as_ref().map(|addr| {
-                    json!({
-                        "discord_user_id": p.discord_user_id,
-                        "discord_username": p.discord_username,
-                        "public_address": addr,
-                        "registered_at": p.registered_at,
+                let profiles_json: Vec<Value> = all_profiles
+                    .iter()
+                    .map(|p| {
+                        json!({
+                            "discord_user_id": p.discord_user_id,
+                            "discord_username": p.discord_username,
+                            "public_address": p.public_address,
+                            "registration_status": p.registration_status,
+                            "registered_at": p.registered_at,
+                            "last_interaction_at": p.last_interaction_at,
+                        })
                     })
-                })
-            })
-            .collect();
+                    .collect();
 
-        Some(Value::Array(entries))
+                Some(json!({
+                    "total_profiles": total_count,
+                    "registered_count": registered_count,
+                    "unregistered_count": total_count - registered_count,
+                    "profiles": profiles_json,
+                }))
+            })
+        });
+
+        result
     }
 
-    fn restore_data(&self, db: &Database, data: &Value) -> Result<(), String> {
+    fn backup_data(&self, _db: &Database) -> Option<Value> {
+        let client = Self::make_client();
+        let rt = tokio::runtime::Handle::try_current().ok()?;
+
+        std::thread::scope(|_| {
+            rt.block_on(async {
+                let entries = client.backup_export().await.ok()?;
+                if entries.is_empty() {
+                    return None;
+                }
+                let json_entries: Vec<Value> = entries
+                    .iter()
+                    .map(|e| {
+                        json!({
+                            "discord_user_id": e.discord_user_id,
+                            "discord_username": e.discord_username,
+                            "public_address": e.public_address,
+                            "registered_at": e.registered_at,
+                        })
+                    })
+                    .collect();
+                Some(Value::Array(json_entries))
+            })
+        })
+    }
+
+    fn restore_data(&self, _db: &Database, data: &Value) -> Result<(), String> {
         let entries = data
             .as_array()
             .ok_or("discord_tipping restore data must be a JSON array")?;
@@ -133,25 +136,27 @@ impl super::Module for DiscordTippingModule {
             return Ok(());
         }
 
-        // Clear existing registrations before restore
-        discord_hooks::db::clear_registrations_for_restore(db)?;
+        let backup_entries: Vec<discord_tipping_types::BackupEntry> = entries
+            .iter()
+            .filter_map(|e| {
+                Some(discord_tipping_types::BackupEntry {
+                    discord_user_id: e["discord_user_id"].as_str()?.to_string(),
+                    discord_username: e["discord_username"]
+                        .as_str()
+                        .map(|s| s.to_string()),
+                    public_address: e["public_address"].as_str()?.to_string(),
+                    registered_at: e["registered_at"].as_str().map(|s| s.to_string()),
+                })
+            })
+            .collect();
 
-        let mut restored = 0;
-        for entry in entries {
-            let user_id = entry["discord_user_id"]
-                .as_str()
-                .ok_or("Missing discord_user_id")?;
-            let username = entry["discord_username"]
-                .as_str()
-                .unwrap_or("unknown");
-            let address = entry["public_address"]
-                .as_str()
-                .ok_or("Missing public_address")?;
+        let client = Self::make_client();
+        let rt = tokio::runtime::Handle::try_current()
+            .map_err(|_| "No tokio runtime available".to_string())?;
 
-            discord_hooks::db::get_or_create_profile(db, user_id, username)?;
-            discord_hooks::db::register_address(db, user_id, address)?;
-            restored += 1;
-        }
+        let restored = std::thread::scope(|_| {
+            rt.block_on(client.backup_restore(backup_entries))
+        })?;
 
         log::info!(
             "[discord_tipping] Restored {} registrations from backup",

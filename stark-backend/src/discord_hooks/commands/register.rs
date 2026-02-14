@@ -32,7 +32,7 @@ pub async fn execute(user_id: &str, address: &str, database: &Database) -> Resul
     }
 
     // Check if address is already registered to someone else
-    if let Some(existing) = db::get_profile_by_address(database, address)? {
+    if let Some(existing) = db::get_profile_by_address(database, address).await? {
         if existing.discord_user_id != user_id {
             return Ok(
                 "This address is already registered to another Discord user. \
@@ -48,7 +48,7 @@ pub async fn execute(user_id: &str, address: &str, database: &Database) -> Resul
     }
 
     // Register the address
-    db::register_address(database, user_id, address)?;
+    db::register_address(database, user_id, address).await?;
 
     Ok(format!(
         "Successfully registered your address: `{}`\n\n\

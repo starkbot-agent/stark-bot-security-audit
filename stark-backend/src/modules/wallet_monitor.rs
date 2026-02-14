@@ -1,20 +1,30 @@
 //! Wallet Monitor module — tracks ETH wallet activity and flags large trades
 //!
-//! Monitors wallets on Ethereum Mainnet + Base using Alchemy Enhanced APIs.
+//! Delegates to the standalone wallet-monitor-service via RPC.
+//! The service must be running separately on WALLET_MONITOR_URL (default: http://127.0.0.1:9100).
 
-use crate::channels::MessageDispatcher;
 use crate::db::Database;
-use crate::gateway::events::EventBroadcaster;
-use crate::integrations::wallet_monitor_worker;
+use crate::integrations::wallet_monitor_client::WalletMonitorClient;
 use crate::tools::builtin::cryptocurrency::wallet_monitor::{
     WalletActivityTool, WalletMonitorControlTool, WalletWatchlistTool,
 };
 use crate::tools::registry::Tool;
-use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub struct WalletMonitorModule;
+
+impl WalletMonitorModule {
+    fn make_client() -> Arc<WalletMonitorClient> {
+        let url = Self::url_from_env();
+        Arc::new(WalletMonitorClient::new(&url))
+    }
+
+    fn url_from_env() -> String {
+        std::env::var("WALLET_MONITOR_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:9100".to_string())
+    }
+}
 
 impl super::Module for WalletMonitorModule {
     fn name(&self) -> &'static str {
@@ -26,104 +36,96 @@ impl super::Module for WalletMonitorModule {
     }
 
     fn version(&self) -> &'static str {
-        "1.0.0"
+        "1.1.0"
     }
 
-    fn required_api_keys(&self) -> Vec<&'static str> {
-        vec!["ALCHEMY_API_KEY"]
+    fn default_port(&self) -> u16 {
+        9100
     }
 
-    fn has_db_tables(&self) -> bool {
-        true
+    fn service_url(&self) -> String {
+        Self::url_from_env()
     }
 
     fn has_tools(&self) -> bool {
         true
     }
 
-    fn has_worker(&self) -> bool {
+    fn has_dashboard(&self) -> bool {
         true
     }
 
-    fn init_tables(&self, conn: &Connection) -> rusqlite::Result<()> {
-        crate::db::tables::wallet_monitor::create_tables(conn)
-    }
-
     fn create_tools(&self) -> Vec<Arc<dyn Tool>> {
+        let client = Self::make_client();
         vec![
-            Arc::new(WalletWatchlistTool::new()),
-            Arc::new(WalletActivityTool::new()),
-            Arc::new(WalletMonitorControlTool::new()),
+            Arc::new(WalletWatchlistTool::new(client.clone())),
+            Arc::new(WalletActivityTool::new(client.clone())),
+            Arc::new(WalletMonitorControlTool::new(client)),
         ]
-    }
-
-    fn spawn_worker(
-        &self,
-        db: Arc<Database>,
-        broadcaster: Arc<EventBroadcaster>,
-        _dispatcher: Arc<MessageDispatcher>,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        Some(tokio::spawn(async move {
-            wallet_monitor_worker::run_worker(db, broadcaster).await;
-        }))
     }
 
     fn skill_content(&self) -> Option<&'static str> {
         Some(WALLET_MONITOR_SKILL)
     }
 
-    fn has_dashboard(&self) -> bool {
-        true
-    }
+    fn dashboard_data(&self, _db: &Database) -> Option<Value> {
+        let client = Self::make_client();
+        let rt = tokio::runtime::Handle::try_current().ok()?;
 
-    fn dashboard_data(&self, db: &Database) -> Option<Value> {
-        let watchlist = db.list_watchlist().ok()?;
-        let stats = db.get_activity_stats().ok()?;
-        let recent = db.query_activity(&crate::db::tables::wallet_monitor::ActivityFilter {
-            limit: Some(10),
-            ..Default::default()
-        }).ok()?;
+        let result = std::thread::scope(|_| {
+            rt.block_on(async {
+                let watchlist = client.list_watchlist().await.ok()?;
+                let stats = client.get_activity_stats().await.ok()?;
+                let filter = wallet_monitor_types::ActivityFilter {
+                    limit: Some(10),
+                    ..Default::default()
+                };
+                let recent = client.query_activity(&filter).await.ok()?;
 
-        let watchlist_json: Vec<Value> = watchlist.iter().map(|w| {
-            json!({
-                "id": w.id,
-                "address": w.address,
-                "label": w.label,
-                "chain": w.chain,
-                "monitor_enabled": w.monitor_enabled,
-                "large_trade_threshold_usd": w.large_trade_threshold_usd,
-                "last_checked_at": w.last_checked_at,
+                let watchlist_json: Vec<Value> = watchlist.iter().map(|w| {
+                    json!({
+                        "id": w.id,
+                        "address": w.address,
+                        "label": w.label,
+                        "chain": w.chain,
+                        "monitor_enabled": w.monitor_enabled,
+                        "large_trade_threshold_usd": w.large_trade_threshold_usd,
+                        "last_checked_at": w.last_checked_at,
+                    })
+                }).collect();
+
+                let recent_activity_json: Vec<Value> = recent.iter().map(|a| {
+                    json!({
+                        "chain": a.chain,
+                        "tx_hash": a.tx_hash,
+                        "activity_type": a.activity_type,
+                        "usd_value": a.usd_value,
+                        "asset_symbol": a.asset_symbol,
+                        "amount_formatted": a.amount_formatted,
+                        "is_large_trade": a.is_large_trade,
+                        "created_at": a.created_at,
+                    })
+                }).collect();
+
+                Some(json!({
+                    "watched_wallets": stats.watched_wallets,
+                    "active_wallets": stats.active_wallets,
+                    "total_transactions": stats.total_transactions,
+                    "large_trades": stats.large_trades,
+                    "watchlist": watchlist_json,
+                    "recent_activity": recent_activity_json,
+                }))
             })
-        }).collect();
+        });
 
-        let recent_activity_json: Vec<Value> = recent.iter().map(|a| {
-            json!({
-                "chain": a.chain,
-                "tx_hash": a.tx_hash,
-                "activity_type": a.activity_type,
-                "usd_value": a.usd_value,
-                "asset_symbol": a.asset_symbol,
-                "amount_formatted": a.amount_formatted,
-                "is_large_trade": a.is_large_trade,
-                "created_at": a.created_at,
-            })
-        }).collect();
-
-        Some(json!({
-            "watched_wallets": stats.watched_wallets,
-            "active_wallets": stats.active_wallets,
-            "total_transactions": stats.total_transactions,
-            "large_trades": stats.large_trades,
-            "watchlist": watchlist_json,
-            "recent_activity": recent_activity_json,
-        }))
+        result
     }
 }
 
 const WALLET_MONITOR_SKILL: &str = r#"---
 name: wallet_monitor
 description: "Monitor ETH wallets for on-chain activity, detect whale trades, and track transaction history on Ethereum Mainnet and Base"
-version: 1.0.0
+version: 1.1.0
 author: starkbot
 tags: [crypto, defi, monitoring, wallets, whale, alerts]
 requires_tools: [wallet_watchlist, wallet_activity, wallet_monitor_control, dexscreener, token_lookup]
@@ -132,6 +134,8 @@ requires_tools: [wallet_watchlist, wallet_activity, wallet_monitor_control, dexs
 # Wallet Monitor Skill
 
 You are helping the user manage their wallet monitoring setup. This skill tracks on-chain activity for watched wallets using Alchemy Enhanced APIs, detecting transfers, swaps, and large trades on Ethereum Mainnet and Base.
+
+The wallet monitor runs as a separate microservice. All tool calls communicate with it via RPC.
 
 ## Available Tools
 
@@ -148,7 +152,7 @@ You are helping the user manage their wallet monitoring setup. This skill tracks
    - `stats`: Overview statistics
 
 3. **wallet_monitor_control** — Control the background worker
-   - `status`: Check if the monitor is running, API key status, wallet counts
+   - `status`: Check if the monitor service is running, wallet counts, uptime
    - `trigger`: Verify worker is active (polls every 60s automatically)
 
 ## Workflow
@@ -160,7 +164,8 @@ You are helping the user manage their wallet monitoring setup. This skill tracks
 
 ## Important Notes
 
-- The monitor requires ALCHEMY_API_KEY to be configured
+- The wallet monitor runs as a standalone service (wallet-monitor-service)
+- Dashboard available at http://127.0.0.1:9100/
 - Supported chains: "mainnet" (Ethereum) and "base" (Base)
 - Each wallet has its own large_trade_threshold_usd (default $10,000)
 - Swap detection: transactions with both outgoing and incoming ERC-20 transfers are classified as swaps

@@ -44,6 +44,10 @@ impl ModelArchetype for KimiArchetype {
         base_prompt.to_string()
     }
 
+    fn requires_single_system_message(&self) -> bool {
+        true
+    }
+
     fn parse_response(&self, content: &str) -> Option<AgentResponse> {
         // Native tool calling uses the API's tool_calls field, not text parsing
         // This is only called if there's text content without tool calls

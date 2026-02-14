@@ -17,4 +17,10 @@
         model_archetype: "openai",
         x402_cost: Some(7500),
     ),
+    "minimax": (
+        display_name: "minimax25.defirelay.com",
+        endpoint: "https://minimax25.defirelay.com/api/v1/chat/completions",
+        model_archetype: "minimax",
+        x402_cost: Some(5000),
+    ),
 }

@@ -122,6 +122,26 @@ async fn handle_ws_connection(
         broadcaster.client_count()
     );
 
+    // Replay recent events so the client sees what happened before they connected
+    let recent_events = broadcaster.get_recent_events();
+    if !recent_events.is_empty() {
+        log::info!(
+            "Replaying {} recent events to client {}",
+            recent_events.len(),
+            client_id
+        );
+        for event in recent_events {
+            if let Ok(json) = serde_json::to_string(&event) {
+                if session.text(json).await.is_err() {
+                    log::warn!("Failed to replay events to client {}", client_id);
+                    broadcaster.unsubscribe(&client_id);
+                    let _ = session.close(None).await;
+                    return;
+                }
+            }
+        }
+    }
+
     // Create a channel for sending messages to the WebSocket
     let (tx, mut rx) = mpsc::channel::<String>(100);
 

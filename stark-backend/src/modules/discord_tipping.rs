@@ -64,10 +64,9 @@ impl super::Module for DiscordTippingModule {
 
     fn dashboard_data(&self, _db: &Database) -> Option<Value> {
         let client = Self::make_client();
-        let rt = tokio::runtime::Handle::try_current().ok()?;
 
-        std::thread::spawn(move || {
-            rt.block_on(async {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
                 let all_profiles = client.list_all_profiles().await.ok()?;
                 let registered_count = all_profiles
                     .iter()
@@ -97,16 +96,13 @@ impl super::Module for DiscordTippingModule {
                 }))
             })
         })
-        .join()
-        .ok()?
     }
 
     fn backup_data(&self, _db: &Database) -> Option<Value> {
         let client = Self::make_client();
-        let rt = tokio::runtime::Handle::try_current().ok()?;
 
-        std::thread::spawn(move || {
-            rt.block_on(async {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
                 let entries = client.backup_export().await.ok()?;
                 if entries.is_empty() {
                     return None;
@@ -125,8 +121,6 @@ impl super::Module for DiscordTippingModule {
                 Some(Value::Array(json_entries))
             })
         })
-        .join()
-        .ok()?
     }
 
     fn restore_data(&self, _db: &Database, data: &Value) -> Result<(), String> {
@@ -153,14 +147,11 @@ impl super::Module for DiscordTippingModule {
             .collect();
 
         let client = Self::make_client();
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|_| "No tokio runtime available".to_string())?;
 
-        let restored = std::thread::spawn(move || {
-            rt.block_on(client.backup_restore(backup_entries))
-        })
-        .join()
-        .map_err(|e| format!("discord_tipping restore thread panicked: {:?}", e))??;
+        let restored = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(client.backup_restore(backup_entries))
+        })?;
 
         log::info!(
             "[discord_tipping] Restored {} registrations from backup",

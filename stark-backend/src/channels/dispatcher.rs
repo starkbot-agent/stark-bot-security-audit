@@ -1347,35 +1347,6 @@ impl MessageDispatcher {
             log::info!("[MULTI_AGENT] Selected network set to: {}", network);
         }
 
-        // Keyword-based skill activation: detect "tip" commands and pre-activate discord_tipping skill
-        // This helps the AI use the correct skill without needing to search for it
-        let message_lower = original_message.text.to_lowercase();
-        if message_lower.contains("tip ") && message_lower.contains("@") {
-            if let Ok(Some(skill)) = self.db.get_enabled_skill_by_name("discord_tipping") {
-                let skills_dir = crate::config::skills_dir();
-                let skill_base_dir = format!("{}/{}", skills_dir, skill.name);
-                let instructions = skill.body.replace("{baseDir}", &skill_base_dir);
-
-                log::info!("[SKILL_DETECTION] Detected 'tip @user' pattern, pre-activating discord_tipping skill");
-
-                // Auto-set subtype if skill specifies one (before tool refresh)
-                self.apply_skill_subtype(&skill, &mut orchestrator, original_message.channel_id);
-
-                orchestrator.context_mut().active_skill = Some(crate::ai::multi_agent::types::ActiveSkill {
-                    name: skill.name,
-                    instructions,
-                    activated_at: chrono::Utc::now().to_rfc3339(),
-                    tool_calls_made: 0,
-                    requires_tools: skill.requires_tools.clone(),
-                });
-
-                // Save to DB for persistence
-                if let Err(e) = self.db.save_agent_context(session_id, orchestrator.context()) {
-                    log::warn!("[SKILL_DETECTION] Failed to save pre-activated skill: {}", e);
-                }
-            }
-        }
-
         // Broadcast initial mode
         let initial_mode = orchestrator.current_mode();
         self.broadcaster.broadcast(GatewayEvent::agent_mode_change(

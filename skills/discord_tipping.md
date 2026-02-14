@@ -1,7 +1,7 @@
 ---
 name: discord_tipping
 description: "Tip Discord users with tokens. Resolves Discord mentions to wallet addresses and executes ERC20 transfers."
-version: 2.4.0
+version: 2.5.0
 author: starkbot
 metadata: {"clawdbot":{"emoji":"💸"}}
 tags: [discord, tipping, crypto, transfer, erc20]

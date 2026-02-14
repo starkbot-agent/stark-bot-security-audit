@@ -1,9 +1,8 @@
 //! DynamicModule — a Module implementation loaded from a `module.toml` manifest
 //! at runtime. No compiled module-specific code needed.
 
-use crate::db::Database;
+use async_trait::async_trait;
 use crate::tools::registry::Tool;
-use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -72,6 +71,7 @@ impl DynamicModule {
     }
 }
 
+#[async_trait]
 impl super::Module for DynamicModule {
     fn name(&self) -> &str {
         &self.manifest.module.name
@@ -114,11 +114,5 @@ impl super::Module for DynamicModule {
 
     fn skill_content(&self) -> Option<&str> {
         self.skill_content.as_deref()
-    }
-
-    fn dashboard_data(&self, _db: &Database) -> Option<Value> {
-        // Dynamic modules don't have compiled dashboard fetchers.
-        // The dashboard is served by the service itself.
-        None
     }
 }

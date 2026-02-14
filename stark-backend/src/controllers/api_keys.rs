@@ -986,7 +986,7 @@ async fn backup_to_cloud(state: web::Data<AppState>, req: HttpRequest) -> impl R
         let installed = state.db.list_installed_modules().unwrap_or_default();
         for entry in &installed {
             if let Some(module) = module_registry.get(&entry.module_name) {
-                if let Some(data) = module.backup_data(&state.db) {
+                if let Some(data) = module.backup_data(&state.db).await {
                     log::info!("Including module '{}' data in backup", entry.module_name);
                     backup.module_data.insert(entry.module_name.clone(), data);
                 }
@@ -1862,7 +1862,7 @@ async fn restore_from_cloud(state: web::Data<AppState>, req: HttpRequest) -> imp
                         module.has_dashboard(),
                     );
                 }
-                match module.restore_data(&state.db, data) {
+                match module.restore_data(&state.db, data).await {
                     Ok(()) => {
                         log::info!("Restored module data for '{}'", module_name);
                         if module_name == "discord_tipping" {

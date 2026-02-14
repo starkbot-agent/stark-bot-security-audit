@@ -3,6 +3,7 @@
 //! Delegates to the standalone wallet-monitor-service via RPC.
 //! The service must be running separately on WALLET_MONITOR_URL (default: http://127.0.0.1:9100).
 
+use async_trait::async_trait;
 use crate::db::Database;
 use crate::integrations::wallet_monitor_client::WalletMonitorClient;
 use crate::tools::builtin::cryptocurrency::wallet_monitor::{
@@ -26,6 +27,7 @@ impl WalletMonitorModule {
     }
 }
 
+#[async_trait]
 impl super::Module for WalletMonitorModule {
     fn name(&self) -> &'static str {
         "wallet_monitor"
@@ -68,57 +70,49 @@ impl super::Module for WalletMonitorModule {
         Some(WALLET_MONITOR_SKILL)
     }
 
-    fn dashboard_data(&self, _db: &Database) -> Option<Value> {
+    async fn dashboard_data(&self, _db: &Database) -> Option<Value> {
         let client = Self::make_client();
+        let watchlist = client.list_watchlist().await.ok()?;
+        let stats = client.get_activity_stats().await.ok()?;
+        let filter = wallet_monitor_types::ActivityFilter {
+            limit: Some(10),
+            ..Default::default()
+        };
+        let recent = client.query_activity(&filter).await.ok()?;
 
-        let handle = tokio::runtime::Handle::current();
-        std::thread::spawn(move || {
-            handle.block_on(async {
-                let watchlist = client.list_watchlist().await.ok()?;
-                let stats = client.get_activity_stats().await.ok()?;
-                let filter = wallet_monitor_types::ActivityFilter {
-                    limit: Some(10),
-                    ..Default::default()
-                };
-                let recent = client.query_activity(&filter).await.ok()?;
-
-                let watchlist_json: Vec<Value> = watchlist.iter().map(|w| {
-                    json!({
-                        "id": w.id,
-                        "address": w.address,
-                        "label": w.label,
-                        "chain": w.chain,
-                        "monitor_enabled": w.monitor_enabled,
-                        "large_trade_threshold_usd": w.large_trade_threshold_usd,
-                        "last_checked_at": w.last_checked_at,
-                    })
-                }).collect();
-
-                let recent_activity_json: Vec<Value> = recent.iter().map(|a| {
-                    json!({
-                        "chain": a.chain,
-                        "tx_hash": a.tx_hash,
-                        "activity_type": a.activity_type,
-                        "usd_value": a.usd_value,
-                        "asset_symbol": a.asset_symbol,
-                        "amount_formatted": a.amount_formatted,
-                        "is_large_trade": a.is_large_trade,
-                        "created_at": a.created_at,
-                    })
-                }).collect();
-
-                Some(json!({
-                    "watched_wallets": stats.watched_wallets,
-                    "active_wallets": stats.active_wallets,
-                    "total_transactions": stats.total_transactions,
-                    "large_trades": stats.large_trades,
-                    "watchlist": watchlist_json,
-                    "recent_activity": recent_activity_json,
-                }))
+        let watchlist_json: Vec<Value> = watchlist.iter().map(|w| {
+            json!({
+                "id": w.id,
+                "address": w.address,
+                "label": w.label,
+                "chain": w.chain,
+                "monitor_enabled": w.monitor_enabled,
+                "large_trade_threshold_usd": w.large_trade_threshold_usd,
+                "last_checked_at": w.last_checked_at,
             })
-        })
-        .join()
-        .expect("dashboard_data thread panicked")
+        }).collect();
+
+        let recent_activity_json: Vec<Value> = recent.iter().map(|a| {
+            json!({
+                "chain": a.chain,
+                "tx_hash": a.tx_hash,
+                "activity_type": a.activity_type,
+                "usd_value": a.usd_value,
+                "asset_symbol": a.asset_symbol,
+                "amount_formatted": a.amount_formatted,
+                "is_large_trade": a.is_large_trade,
+                "created_at": a.created_at,
+            })
+        }).collect();
+
+        Some(json!({
+            "watched_wallets": stats.watched_wallets,
+            "active_wallets": stats.active_wallets,
+            "total_transactions": stats.total_transactions,
+            "large_trades": stats.large_trades,
+            "watchlist": watchlist_json,
+            "recent_activity": recent_activity_json,
+        }))
     }
 }
 

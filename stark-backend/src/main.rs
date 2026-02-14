@@ -648,7 +648,7 @@ async fn restore_backup_data(
                         module.has_dashboard(),
                     );
                 }
-                match module.restore_data(db, data) {
+                match module.restore_data(db, data).await {
                     Ok(()) => log::info!("[Keystore] Restored module data for '{}'", module_name),
                     Err(e) => log::warn!("[Keystore] Failed to restore module data for '{}': {}", module_name, e),
                 }

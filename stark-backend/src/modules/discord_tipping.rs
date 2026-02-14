@@ -3,6 +3,7 @@
 //! Delegates to the standalone discord-tipping-service via RPC.
 //! The service must be running separately on DISCORD_TIPPING_URL (default: http://127.0.0.1:9101).
 
+use async_trait::async_trait;
 use crate::db::Database;
 use crate::integrations::discord_tipping_client::DiscordTippingClient;
 use crate::tools::registry::Tool;
@@ -23,6 +24,7 @@ impl DiscordTippingModule {
     }
 }
 
+#[async_trait]
 impl super::Module for DiscordTippingModule {
     fn name(&self) -> &'static str {
         "discord_tipping"
@@ -62,74 +64,58 @@ impl super::Module for DiscordTippingModule {
         Some(include_str!("../../../skills/discord_tipping.md"))
     }
 
-    fn dashboard_data(&self, _db: &Database) -> Option<Value> {
+    async fn dashboard_data(&self, _db: &Database) -> Option<Value> {
         let client = Self::make_client();
+        let all_profiles = client.list_all_profiles().await.ok()?;
+        let registered_count = all_profiles
+            .iter()
+            .filter(|p| p.registration_status == "registered")
+            .count();
+        let total_count = all_profiles.len();
 
-        let handle = tokio::runtime::Handle::current();
-        std::thread::spawn(move || {
-            handle.block_on(async {
-                let all_profiles = client.list_all_profiles().await.ok()?;
-                let registered_count = all_profiles
-                    .iter()
-                    .filter(|p| p.registration_status == "registered")
-                    .count();
-                let total_count = all_profiles.len();
-
-                let profiles_json: Vec<Value> = all_profiles
-                    .iter()
-                    .map(|p| {
-                        json!({
-                            "discord_user_id": p.discord_user_id,
-                            "discord_username": p.discord_username,
-                            "public_address": p.public_address,
-                            "registration_status": p.registration_status,
-                            "registered_at": p.registered_at,
-                            "last_interaction_at": p.last_interaction_at,
-                        })
-                    })
-                    .collect();
-
-                Some(json!({
-                    "total_profiles": total_count,
-                    "registered_count": registered_count,
-                    "unregistered_count": total_count - registered_count,
-                    "profiles": profiles_json,
-                }))
+        let profiles_json: Vec<Value> = all_profiles
+            .iter()
+            .map(|p| {
+                json!({
+                    "discord_user_id": p.discord_user_id,
+                    "discord_username": p.discord_username,
+                    "public_address": p.public_address,
+                    "registration_status": p.registration_status,
+                    "registered_at": p.registered_at,
+                    "last_interaction_at": p.last_interaction_at,
+                })
             })
-        })
-        .join()
-        .expect("dashboard_data thread panicked")
+            .collect();
+
+        Some(json!({
+            "total_profiles": total_count,
+            "registered_count": registered_count,
+            "unregistered_count": total_count - registered_count,
+            "profiles": profiles_json,
+        }))
     }
 
-    fn backup_data(&self, _db: &Database) -> Option<Value> {
+    async fn backup_data(&self, _db: &Database) -> Option<Value> {
         let client = Self::make_client();
-
-        let handle = tokio::runtime::Handle::current();
-        std::thread::spawn(move || {
-            handle.block_on(async {
-                let entries = client.backup_export().await.ok()?;
-                if entries.is_empty() {
-                    return None;
-                }
-                let json_entries: Vec<Value> = entries
-                    .iter()
-                    .map(|e| {
-                        json!({
-                            "discord_user_id": e.discord_user_id,
-                            "discord_username": e.discord_username,
-                            "public_address": e.public_address,
-                            "registered_at": e.registered_at,
-                        })
-                    })
-                    .collect();
-                Some(Value::Array(json_entries))
+        let entries = client.backup_export().await.ok()?;
+        if entries.is_empty() {
+            return None;
+        }
+        let json_entries: Vec<Value> = entries
+            .iter()
+            .map(|e| {
+                json!({
+                    "discord_user_id": e.discord_user_id,
+                    "discord_username": e.discord_username,
+                    "public_address": e.public_address,
+                    "registered_at": e.registered_at,
+                })
             })
-        })
-        .join()
-        .expect("backup_data thread panicked")
+            .collect();
+        Some(Value::Array(json_entries))
     }
 
-    fn restore_data(&self, _db: &Database, data: &Value) -> Result<(), String> {
+    async fn restore_data(&self, _db: &Database, data: &Value) -> Result<(), String> {
         let entries = data
             .as_array()
             .ok_or("discord_tipping restore data must be a JSON array")?;
@@ -153,13 +139,7 @@ impl super::Module for DiscordTippingModule {
             .collect();
 
         let client = Self::make_client();
-
-        let handle = tokio::runtime::Handle::current();
-        let restored = std::thread::spawn(move || {
-            handle.block_on(client.backup_restore(backup_entries))
-        })
-        .join()
-        .expect("restore_data thread panicked")?;
+        let restored = client.backup_restore(backup_entries).await?;
 
         log::info!(
             "[discord_tipping] Restored {} registrations from backup",

@@ -266,7 +266,7 @@ async fn module_dashboard(
         }));
     }
 
-    match module.dashboard_data(&data.db) {
+    match module.dashboard_data(&data.db).await {
         Some(data) => HttpResponse::Ok().json(data),
         None => HttpResponse::Ok().json(serde_json::json!({})),
     }

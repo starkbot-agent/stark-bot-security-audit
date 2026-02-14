@@ -12,6 +12,7 @@ pub mod manifest;
 pub mod registry;
 pub mod wallet_monitor;
 
+use async_trait::async_trait;
 use crate::db::Database;
 use crate::tools::registry::Tool;
 use serde_json::Value;
@@ -25,6 +26,7 @@ pub use registry::ModuleRegistry;
 /// and dashboard. This trait defines the interface the main bot uses to
 /// interact with them: registering tools, fetching dashboard data, and
 /// performing backup/restore via RPC.
+#[async_trait]
 pub trait Module: Send + Sync {
     /// Unique module name (used as identifier)
     fn name(&self) -> &str;
@@ -52,17 +54,17 @@ pub trait Module: Send + Sync {
     }
 
     /// Return dashboard data as JSON (fetched from the service via RPC)
-    fn dashboard_data(&self, _db: &Database) -> Option<Value> {
+    async fn dashboard_data(&self, _db: &Database) -> Option<Value> {
         None
     }
 
     /// Return data to include in cloud backup (fetched from service)
-    fn backup_data(&self, _db: &Database) -> Option<Value> {
+    async fn backup_data(&self, _db: &Database) -> Option<Value> {
         None
     }
 
     /// Restore module data from a cloud backup (sent to service)
-    fn restore_data(&self, _db: &Database, _data: &Value) -> Result<(), String> {
+    async fn restore_data(&self, _db: &Database, _data: &Value) -> Result<(), String> {
         Ok(())
     }
 }

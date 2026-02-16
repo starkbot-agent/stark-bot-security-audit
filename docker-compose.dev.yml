@@ -1,0 +1,65 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8081:8081"   # Gateway WebSocket
+    expose:
+      - "8082"        # HTTP API (internal, proxied via frontend)
+    volumes:
+      # Mount source code for hot reloading
+      - ./stark-backend:/app/stark-backend
+      - ./stark-frontend:/app/stark-frontend
+      - ./Cargo.toml:/app/Cargo.toml
+      - ./Cargo.lock:/app/Cargo.lock
+      # Mount config directory (tokens.ron, presets, etc.)
+      - ./config:/app/config
+      # Mount ABIs for web3 function calls
+      - ./abis:/app/abis
+      # Mount skills directory for bundled skills
+      - ./skills:/app/skills
+      # Mount soul_template (default SOUL.md and GUIDELINES.md)
+      - ./soul_template:/app/soul_template
+      # Mount workspace directory for agent files
+      - ./workspace:/app/stark-backend/workspace
+      # Mount journal directory for agent notes
+      - ./journal:/app/stark-backend/journal
+      # Mount soul directory (copied from soul_template on first startup)
+      - ./soul:/app/stark-backend/soul
+      # Mount memory directory for agent memories
+      - ./memory:/app/stark-backend/memory
+      # Use named volume for target dir to avoid rebuilding deps every time
+      - cargo-target:/app/target
+      # Cache cargo registry for faster rebuilds
+      - cargo-registry:/usr/local/cargo/registry
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=info
+      - RUST_BACKTRACE=1
+      - PORT=8082
+      - STARK_SKILLS_DIR=/app/skills
+      - PATH=/root/.local/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8080:8080"   # Vite dev server (main entry point)
+    volumes:
+      # Mount frontend source for hot reloading
+      - ./stark-frontend:/app
+      # Use named volume for node_modules to avoid overwriting
+      - frontend-node-modules:/app/node_modules
+    depends_on:
+      - backend
+    environment:
+      - NODE_ENV=development
+      - DOCKER=1
+
+volumes:
+  cargo-target:
+  cargo-registry:
+  frontend-node-modules:

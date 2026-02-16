@@ -1,0 +1,30 @@
+// x402_rpc presets configuration
+// Each preset defines an RPC method and which registers to read for params
+
+{
+    "gas_price": (
+        method: "eth_gasPrice",
+        params: [],  // No register params needed
+        description: "Get current gas price",
+    ),
+
+    "block_number": (
+        method: "eth_blockNumber",
+        params: [],
+        description: "Get current block number",
+    ),
+
+    "get_balance": (
+        method: "eth_getBalance",
+        params: ["wallet_address"],  // Register keys to read
+        append_latest: true,  // Add "latest" as final param
+        description: "Get ETH balance of wallet",
+    ),
+
+    "get_nonce": (
+        method: "eth_getTransactionCount",
+        params: ["wallet_address"],
+        append_latest: true,
+        description: "Get transaction count (nonce) of wallet",
+    ),
+}

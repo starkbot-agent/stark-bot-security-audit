@@ -1,0 +1,14 @@
+{
+    "defirelay": (
+        display_name: "DeFi Relay (x402)",
+        description: "Paid RPC via x402 payment protocol",
+        x402: true,
+        endpoints: {
+            "base": "https://rpc.defirelay.com/rpc/light/base",
+            "mainnet": "https://rpc.defirelay.com/rpc/light/mainnet",
+            "polygon": "https://rpc.defirelay.com/rpc/light/polygon",
+            "arbitrum": "https://rpc.defirelay.com/rpc/light/arbitrum",
+            "optimism": "https://rpc.defirelay.com/rpc/light/optimism",
+        },
+    ),
+}

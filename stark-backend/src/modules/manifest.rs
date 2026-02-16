@@ -1,0 +1,272 @@
+//! Module manifest parser — reads `module.toml` into typed structs.
+//!
+//! The manifest is the single source of truth for dynamically loaded modules.
+//! It describes the module metadata, service configuration, tool definitions,
+//! and skill content — everything starkbot needs to load a module without
+//! compiling module-specific code.
+
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::Path;
+
+/// Top-level module manifest (deserialized from `module.toml`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModuleManifest {
+    pub module: ModuleInfo,
+    pub service: ServiceConfig,
+    #[serde(default)]
+    pub skill: Option<SkillConfig>,
+    #[serde(default)]
+    pub platforms: Option<PlatformConfig>,
+    #[serde(default)]
+    pub tools: Vec<ToolManifest>,
+}
+
+/// Basic module metadata.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModuleInfo {
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub author: Option<String>,
+    pub description: String,
+    #[serde(default)]
+    pub license: Option<String>,
+}
+
+/// Service configuration — how to reach and launch the microservice.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServiceConfig {
+    pub default_port: u16,
+    /// Environment variable that overrides the port (e.g. "WALLET_MONITOR_PORT")
+    #[serde(default)]
+    pub port_env_var: Option<String>,
+    /// Environment variable that overrides the full URL (e.g. "WALLET_MONITOR_URL")
+    #[serde(default)]
+    pub url_env_var: Option<String>,
+    #[serde(default)]
+    pub has_dashboard: bool,
+    #[serde(default = "default_health_endpoint")]
+    pub health_endpoint: String,
+    /// Extra environment variables the service needs.
+    #[serde(default)]
+    pub env_vars: HashMap<String, EnvVarSpec>,
+}
+
+fn default_health_endpoint() -> String {
+    "/rpc/status".to_string()
+}
+
+/// Spec for a required/optional environment variable.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnvVarSpec {
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Skill content configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SkillConfig {
+    /// Relative path to the skill markdown file (e.g. "skill.md").
+    pub content_file: String,
+}
+
+/// Supported platforms list.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlatformConfig {
+    #[serde(default)]
+    pub supported: Vec<String>,
+}
+
+/// A tool definition from the manifest.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolManifest {
+    pub name: String,
+    pub description: String,
+    #[serde(default = "default_tool_group")]
+    pub group: String,
+    #[serde(default = "default_rpc_method")]
+    pub rpc_method: String,
+    pub rpc_endpoint: String,
+    #[serde(default)]
+    pub parameters: HashMap<String, ToolParameterManifest>,
+    /// Parameters that are required (if not specified, inferred from individual param `required` fields).
+    #[serde(default)]
+    pub required_params: Option<Vec<String>>,
+}
+
+fn default_tool_group() -> String {
+    "web".to_string()
+}
+
+fn default_rpc_method() -> String {
+    "POST".to_string()
+}
+
+/// A single tool parameter from the manifest.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolParameterManifest {
+    #[serde(rename = "type", default = "default_param_type")]
+    pub param_type: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(rename = "enum", default)]
+    pub enum_values: Option<Vec<String>>,
+    #[serde(default)]
+    pub default: Option<toml::Value>,
+}
+
+fn default_param_type() -> String {
+    "string".to_string()
+}
+
+impl ModuleManifest {
+    /// Load a manifest from a `module.toml` file path.
+    pub fn from_file(path: &Path) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+        Self::from_str(&content)
+    }
+
+    /// Parse a manifest from a TOML string.
+    pub fn from_str(content: &str) -> Result<Self, String> {
+        toml::from_str(content).map_err(|e| format!("Failed to parse module.toml: {}", e))
+    }
+
+    /// Build the service URL from environment variables or defaults.
+    pub fn service_url(&self) -> String {
+        // First check the URL env var
+        if let Some(ref url_var) = self.service.url_env_var {
+            if let Ok(url) = std::env::var(url_var) {
+                return url;
+            }
+        }
+        // Then check the port env var
+        let port = if let Some(ref port_var) = self.service.port_env_var {
+            std::env::var(port_var)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(self.service.default_port)
+        } else {
+            self.service.default_port
+        };
+        format!("http://127.0.0.1:{}", port)
+    }
+}
+
+impl ToolManifest {
+    /// Compute the list of required parameter names.
+    /// If `required_params` is explicitly set, use that.
+    /// Otherwise, collect parameter names where `required = true`.
+    pub fn required_parameters(&self) -> Vec<String> {
+        if let Some(ref explicit) = self.required_params {
+            return explicit.clone();
+        }
+        self.parameters
+            .iter()
+            .filter(|(_, p)| p.required)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Parse the group string into a ToolGroup enum.
+    pub fn tool_group(&self) -> crate::tools::types::ToolGroup {
+        match self.group.to_lowercase().as_str() {
+            "system" => crate::tools::types::ToolGroup::System,
+            "web" => crate::tools::types::ToolGroup::Web,
+            "filesystem" => crate::tools::types::ToolGroup::Filesystem,
+            "finance" => crate::tools::types::ToolGroup::Finance,
+            "development" => crate::tools::types::ToolGroup::Development,
+            "exec" => crate::tools::types::ToolGroup::Exec,
+            "messaging" => crate::tools::types::ToolGroup::Messaging,
+            "social" => crate::tools::types::ToolGroup::Social,
+            "memory" => crate::tools::types::ToolGroup::Memory,
+            _ => crate::tools::types::ToolGroup::Web, // default
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_minimal_manifest() {
+        let toml = r#"
+[module]
+name = "test_module"
+version = "1.0.0"
+description = "A test module"
+
+[service]
+default_port = 9200
+"#;
+        let manifest = ModuleManifest::from_str(toml).unwrap();
+        assert_eq!(manifest.module.name, "test_module");
+        assert_eq!(manifest.service.default_port, 9200);
+        assert!(manifest.tools.is_empty());
+    }
+
+    #[test]
+    fn test_parse_full_manifest() {
+        let toml = r#"
+[module]
+name = "wallet_monitor"
+version = "1.1.0"
+author = "@ethereumdegen"
+description = "Monitor ETH wallets"
+license = "MIT"
+
+[service]
+default_port = 9100
+port_env_var = "WALLET_MONITOR_PORT"
+url_env_var = "WALLET_MONITOR_URL"
+has_dashboard = true
+health_endpoint = "/rpc/status"
+
+[service.env_vars]
+ALCHEMY_API_KEY = { required = true, description = "Alchemy API key" }
+
+[skill]
+content_file = "skill.md"
+
+[platforms]
+supported = ["linux-x86_64", "darwin-aarch64"]
+
+[[tools]]
+name = "wallet_watchlist"
+description = "Manage the wallet watchlist"
+group = "finance"
+rpc_method = "POST"
+rpc_endpoint = "/rpc/watchlist"
+
+[tools.parameters.action]
+type = "string"
+description = "Action to perform"
+required = true
+enum = ["add", "remove", "list"]
+
+[tools.parameters.address]
+type = "string"
+description = "Ethereum wallet address"
+required = false
+"#;
+        let manifest = ModuleManifest::from_str(toml).unwrap();
+        assert_eq!(manifest.module.name, "wallet_monitor");
+        assert_eq!(manifest.module.author.as_deref(), Some("@ethereumdegen"));
+        assert_eq!(manifest.service.default_port, 9100);
+        assert!(manifest.service.has_dashboard);
+        assert_eq!(manifest.tools.len(), 1);
+
+        let tool = &manifest.tools[0];
+        assert_eq!(tool.name, "wallet_watchlist");
+        assert_eq!(tool.rpc_endpoint, "/rpc/watchlist");
+        assert_eq!(tool.parameters.len(), 2);
+        assert_eq!(tool.required_parameters(), vec!["action".to_string()]);
+        assert_eq!(tool.tool_group(), crate::tools::types::ToolGroup::Finance);
+    }
+}

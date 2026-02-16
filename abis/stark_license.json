@@ -1,0 +1,175 @@
+{
+  "name": "StarkLicense",
+  "description": "EIP-8004 Agent Identity Registry (NFT-based, UUPS proxy on Base)",
+  "abi": [
+    {
+      "name": "register",
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "inputs": [],
+      "outputs": [{"name": "agentId", "type": "uint256"}]
+    },
+    {
+      "name": "register",
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "inputs": [
+        {"name": "uri", "type": "string"}
+      ],
+      "outputs": [{"name": "agentId", "type": "uint256"}]
+    },
+    {
+      "name": "register",
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "inputs": [
+        {"name": "uri", "type": "string"},
+        {"name": "metadata", "type": "tuple[]", "components": [
+          {"name": "key", "type": "string"},
+          {"name": "value", "type": "bytes"}
+        ]}
+      ],
+      "outputs": [{"name": "agentId", "type": "uint256"}]
+    },
+    {
+      "name": "agentURI",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [{"name": "agentId", "type": "uint256"}],
+      "outputs": [{"name": "", "type": "string"}]
+    },
+    {
+      "name": "setAgentURI",
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "inputs": [
+        {"name": "agentId", "type": "uint256"},
+        {"name": "newURI", "type": "string"}
+      ],
+      "outputs": []
+    },
+    {
+      "name": "getMetadata",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [
+        {"name": "agentId", "type": "uint256"},
+        {"name": "metadataKey", "type": "string"}
+      ],
+      "outputs": [{"name": "", "type": "bytes"}]
+    },
+    {
+      "name": "setMetadata",
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "inputs": [
+        {"name": "agentId", "type": "uint256"},
+        {"name": "metadataKey", "type": "string"},
+        {"name": "metadataValue", "type": "bytes"}
+      ],
+      "outputs": []
+    },
+    {
+      "name": "getAgentWallet",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [{"name": "agentId", "type": "uint256"}],
+      "outputs": [{"name": "", "type": "address"}]
+    },
+    {
+      "name": "setAgentWallet",
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "inputs": [
+        {"name": "agentId", "type": "uint256"},
+        {"name": "newWallet", "type": "address"},
+        {"name": "deadline", "type": "uint256"},
+        {"name": "signature", "type": "bytes"}
+      ],
+      "outputs": []
+    },
+    {
+      "name": "unsetAgentWallet",
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "inputs": [{"name": "agentId", "type": "uint256"}],
+      "outputs": []
+    },
+    {
+      "name": "paymentToken",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [],
+      "outputs": [{"name": "", "type": "address"}]
+    },
+    {
+      "name": "registrationFee",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [],
+      "outputs": [{"name": "", "type": "uint256"}]
+    },
+    {
+      "name": "totalAgents",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [],
+      "outputs": [{"name": "", "type": "uint256"}]
+    },
+    {
+      "name": "totalBurned",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [],
+      "outputs": [{"name": "", "type": "uint256"}]
+    },
+    {
+      "name": "ownerOf",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [{"name": "tokenId", "type": "uint256"}],
+      "outputs": [{"name": "", "type": "address"}]
+    },
+    {
+      "name": "balanceOf",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [{"name": "owner", "type": "address"}],
+      "outputs": [{"name": "", "type": "uint256"}]
+    },
+    {
+      "name": "tokenOfOwnerByIndex",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [
+        {"name": "owner", "type": "address"},
+        {"name": "index", "type": "uint256"}
+      ],
+      "outputs": [{"name": "", "type": "uint256"}]
+    },
+    {
+      "name": "walletNonce",
+      "type": "function",
+      "stateMutability": "view",
+      "inputs": [{"name": "agentId", "type": "uint256"}],
+      "outputs": [{"name": "", "type": "uint256"}]
+    },
+    {
+      "name": "version",
+      "type": "function",
+      "stateMutability": "pure",
+      "inputs": [],
+      "outputs": [{"name": "", "type": "uint256"}]
+    },
+    {
+      "name": "approve",
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "inputs": [
+        {"name": "to", "type": "address"},
+        {"name": "tokenId", "type": "uint256"}
+      ],
+      "outputs": []
+    }
+  ]
+}

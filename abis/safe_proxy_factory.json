@@ -1,0 +1,24 @@
+{
+  "name": "SafeProxyFactory",
+  "description": "Safe Proxy Factory v1.4.1 — deploy new Safe proxy instances",
+  "abi": [
+    {
+      "name": "createProxyWithNonce",
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "inputs": [
+        {"name": "_singleton", "type": "address"},
+        {"name": "initializer", "type": "bytes"},
+        {"name": "saltNonce", "type": "uint256"}
+      ],
+      "outputs": [{"name": "proxy", "type": "address"}]
+    },
+    {
+      "name": "proxyCreationCode",
+      "type": "function",
+      "stateMutability": "pure",
+      "inputs": [],
+      "outputs": [{"name": "", "type": "bytes"}]
+    }
+  ]
+}

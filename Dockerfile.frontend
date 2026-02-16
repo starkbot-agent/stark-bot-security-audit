@@ -1,0 +1,14 @@
+# Frontend development Dockerfile
+FROM node:20-slim
+
+WORKDIR /app
+
+# Install dependencies first (will be overwritten by volume mount, but cached in named volume)
+COPY stark-frontend/package*.json ./
+RUN npm install
+
+# Expose Vite dev server port
+EXPOSE 8080
+
+# Run Vite dev server with host flag to allow external access
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

@@ -1,0 +1,21 @@
+// x402_fetch presets configuration
+// Each preset defines how to build a URL from register values
+
+{
+    "swap_quote": (
+        base_url: "https://quoter.defirelay.com/swap/allowance-holder/quote",
+        jq_filter: "{to: .transaction.to, data: .transaction.data, value: .transaction.value, gas: .transaction.gas, buyAmount: .buyAmount, issues: .issues}",
+        // Register keys to read, mapped to URL param names
+        params: [
+            ("wallet_address", "taker"),
+            ("sell_token", "sellToken"),
+            ("buy_token", "buyToken"),
+            ("sell_amount", "sellAmount"),
+        ],
+        // Additional static params added to URL
+        static_params: [
+            ("chainId", "{network_chain_id}"),  // replaced with 8453 for base, 1 for mainnet
+        ],
+        description: "Get swap quote from 0x via DeFi Relay",
+    ),
+}
